@@ -945,7 +945,7 @@ export default async function RoundEmployeesPage({
 
       <PageHeader
         title="จัดผู้ถูกประเมินเข้ารอบประเมิน"
-        description="เลือกรอบประเมิน แล้วนำเข้าข้อมูลเจ้าหน้าที่จาก SSBDatabase.dbo.PYREXT พร้อม snapshot วิชาชีพ ระดับ กลุ่มระดับ และหน่วยงาน"
+        description=""
       />
 
       {draftRounds.length === 0 && (

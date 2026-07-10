@@ -6,6 +6,8 @@ import {
   getSessionMaxAgeSeconds,
 } from "@/lib/session-core";
 
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
+
 function shouldUseSecureCookie() {
   const cookieSecure = process.env.COOKIE_SECURE?.trim().toLowerCase();
   if (cookieSecure === "true") return true;
@@ -22,7 +24,7 @@ function normalizeRedirect(value: FormDataEntryValue | null) {
 }
 
 function redirectToLogin(request: Request, error: "required" | "invalid" | "system", redirect: string) {
-  const url = new URL("/login", request.url);
+  const url = new URL(`${basePath}/login`, request.url);
   url.searchParams.set("error", error);
   url.searchParams.set("redirect", redirect);
   return NextResponse.redirect(url, { status: 303 });

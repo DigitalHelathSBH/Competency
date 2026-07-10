@@ -5,6 +5,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSidebar } from "../context/SidebarContext";
 
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
+
 type IconProps = React.SVGProps<SVGSVGElement>;
 
 const IconBase = ({ children, ...props }: IconProps & { children: React.ReactNode }) => (
@@ -320,7 +322,7 @@ const AppSidebar: React.FC = () => {
 
   useEffect(() => {
     let active = true;
-    fetch("/api/auth/me")
+    fetch(`${basePath}/api/auth/me`)
       .then((response) => (response.ok ? response.json() : null))
       .then((data) => {
         if (active && data?.user) setUser(data.user);

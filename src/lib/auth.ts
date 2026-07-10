@@ -25,7 +25,7 @@ export async function loginWithEmp(username: string, password: string): Promise<
               ELSE ${ssbDb}.dbo.GetUserFullName(p.PAYROLLNO)
             END AS nvarchar(255)
           ) AS full_name,
-          au.admin_role_type AS is_admin
+          au.admin_role_type AS admin_role_type
       FROM dbo.Emp e
       LEFT JOIN ${ssbDb}.dbo.PYREXT p
           ON CAST(e.EmpID AS varchar(20)) = CAST(p.PAYROLLNO AS varchar(20))
@@ -43,6 +43,6 @@ export async function loginWithEmp(username: string, password: string): Promise<
     emp_id: row.emp_id,
     payroll_no: row.payroll_no,
     full_name: row.full_name || row.emp_id,
-    is_admin: Boolean(row.is_admin),
+    is_admin: Number(row.admin_role_type) === 1,
   };
 }

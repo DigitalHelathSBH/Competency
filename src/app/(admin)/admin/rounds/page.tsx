@@ -171,8 +171,10 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
 
       await transaction.commit();
     } catch (error) {
-      if (transaction.active) {
-        await transaction.rollback();
+      try {
+         await transaction.rollback();
+      } catch {
+         // ignore rollback error
       }
 
       console.error(error);
@@ -496,8 +498,10 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
 
       await transaction.commit();
     } catch (error) {
-      if (transaction.active) {
-        await transaction.rollback();
+      try {
+          await transaction.rollback();
+      } catch {
+           // ignore rollback error
       }
 
       console.error(error);
@@ -888,8 +892,10 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
         }
       }
     } catch (error) {
-      if (transaction.active) {
-        await transaction.rollback();
+      try {
+         await transaction.rollback();
+      } catch {
+         // ignore rollback error
       }
 
       console.error(error);

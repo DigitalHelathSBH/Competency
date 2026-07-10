@@ -433,6 +433,13 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
     const divisionRule = weightRuleMap.get(scope.scope_value);
     return !isWeightComplete(divisionRule) && !defaultComplete;
   });
+ 
+  const questionRecordsets =
+    questionResult.recordsets as unknown as Array<Array<Record<string, unknown>>>;
+
+  const commonQuestionCheck = questionRecordsets[0]?.[0] ?? {};
+  const professionQuestionCheck = questionRecordsets[1]?.[0] ?? {};
+  const descriptionCheck = questionRecordsets[2]?.[0] ?? {};
 
   const counts: SummaryCounts = {
     totalEmployees: toNumber(base.total_employees),
@@ -447,9 +454,9 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
     lowerRankEvaluator: toNumber(invalidAssignment.lower_rank_evaluator),
     duplicateAssignmentLevel: toNumber(duplicateAssignment.duplicate_assignment_level),
     missingWeightScope: missingWeightScopes.length,
-    missingCommonQuestion: toNumber(questionResult.recordsets[0]?.[0]?.missing_common_question),
-    missingProfessionQuestion: toNumber(questionResult.recordsets[1]?.[0]?.missing_profession_question),
-    missingDescription: toNumber(questionResult.recordsets[2]?.[0]?.missing_description),
+    missingCommonQuestion: toNumber(commonQuestionCheck.missing_common_question),
+    missingProfessionQuestion: toNumber(professionQuestionCheck.missing_profession_question),
+    missingDescription: toNumber(descriptionCheck.missing_description),
   };
 
   const problems: ProblemRow[] = [];

@@ -17,12 +17,13 @@ function getUserPhotoUrl(user: CurrentUser | null) {
 }
 
 export default function UserDropdown() {
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
   const [isOpen, setIsOpen] = useState(false);
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
 
   useEffect(() => {
-    fetch("/api/auth/me")
+    fetch(`${basePath}/api/auth/me`)
       .then((response) => (response.ok ? response.json() : null))
       .then((data) => {
         if (data?.user) setUser(data.user);
@@ -37,8 +38,8 @@ export default function UserDropdown() {
 
   async function handleLogout() {
     setLoggingOut(true);
-    await fetch("/api/auth/logout", { method: "POST" });
-    window.location.href = "/login";
+    await fetch(`${basePath}/api/auth/logout`, { method: "POST" });
+    window.location.href = `${basePath}/login`;
   }
 
   return (

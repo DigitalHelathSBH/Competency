@@ -61,6 +61,8 @@ export default function SignInForm({
   initialErrorMessage = "",
 }: SignInFormProps) {
   const router = useRouter();
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
+
   const redirectTo = normalizeRedirect(initialRedirectTo);
   const [showPassword, setShowPassword] = useState(false);
   const [username, setUsername] = useState("");
@@ -84,7 +86,7 @@ export default function SignInForm({
     }
 
     try {
-      const response = await fetch("/api/auth/login", {
+      const response = await fetch(`${basePath}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: formUsername, password: formPassword }),
@@ -114,7 +116,7 @@ export default function SignInForm({
               เข้าสู่ระบบ Competency
             </h1>
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              ใช้รหัสเจ้าหน้าที่และรหัสผ่านจากตาราง Emp
+              
             </p>
           </div>
 
@@ -124,7 +126,7 @@ export default function SignInForm({
             </div>
           )}
 
-          <form method="post" action="/api/auth/login-form" onSubmit={handleSubmit}>
+          <form method="post" action={`${basePath}/api/auth/login-form`} onSubmit={handleSubmit}>
             <input type="hidden" name="redirect" value={redirectTo} />
 
             <div className="space-y-6">
