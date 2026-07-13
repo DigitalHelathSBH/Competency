@@ -8,6 +8,8 @@ export default function AuthLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
+
   return (
     <div className="relative z-1 bg-white p-6 dark:bg-gray-900 sm:p-0">
       <div className="relative flex h-screen w-full flex-col justify-center dark:bg-gray-900 lg:flex-row sm:p-0">
@@ -19,7 +21,7 @@ export default function AuthLayout({
               <Image
                 width={80}
                 height={80}
-                src="/images/logo/logo-icon.svg"
+                src={`${basePath}/images/logo/logo-icon.svg`}
                 alt="Competency"
                 className="mb-5"
               />

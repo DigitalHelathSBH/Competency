@@ -18,6 +18,13 @@ type Notice = {
   message: string;
 };
 
+function shouldUseSecureCookie() {
+  const cookieSecure = process.env.COOKIE_SECURE?.trim().toLowerCase();
+  if (cookieSecure === "true") return true;
+  if (cookieSecure === "false") return false;
+  return process.env.NODE_ENV === "production";
+}
+
 function parseNotice(value: string | undefined): Notice | null {
   if (!value) return null;
 
@@ -44,7 +51,7 @@ async function setNoticeCookie(type: "success" | "error", message: string) {
   cookieStore.set(EVALUATION_NOTICE_COOKIE, `${type}:${encodeURIComponent(message)}`, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: shouldUseSecureCookie(),
     maxAge: type === "success" ? 8 : 30,
     path: "/",
   });
@@ -82,7 +89,6 @@ export default async function EvaluationFormPage() {
         throw new Error("รอบประเมินนี้ปิดแล้ว หรือไม่ได้อยู่ในสถานะเปิดประเมิน จึงไม่สามารถแก้ไขคะแนนได้");
       }
 
-      const wasSubmitted = Number(data.assignment.evaluation_status_type || 0) === 1;
       redirectPath = getSafeReturnPath();
 
       const details = data.questions.map((question) => {
@@ -120,19 +126,19 @@ export default async function EvaluationFormPage() {
 
       await saveEvaluation(currentAssignmentId, currentSession.emp_id, "submit", details);
 
-      await setNoticeCookie("success", wasSubmitted ? "บันทึกการแก้ไขคะแนนเรียบร้อยแล้ว" : "ส่งผลประเมินเรียบร้อยแล้ว");
+      await setNoticeCookie("success", "ส่งผลประเมินเรียบร้อยแล้ว");
 
       currentCookieStore.set(EVALUATION_ASSIGNMENT_COOKIE, "", {
         httpOnly: true,
         sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
+        secure: shouldUseSecureCookie(),
         maxAge: 0,
         path: "/",
       });
       currentCookieStore.set(EVALUATION_RETURN_COOKIE, "", {
         httpOnly: true,
         sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
+        secure: shouldUseSecureCookie(),
         maxAge: 0,
         path: "/",
       });

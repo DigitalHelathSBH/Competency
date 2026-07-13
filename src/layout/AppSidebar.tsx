@@ -5,8 +5,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSidebar } from "../context/SidebarContext";
 
-const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
-
 type IconProps = React.SVGProps<SVGSVGElement>;
 
 const IconBase = ({ children, ...props }: IconProps & { children: React.ReactNode }) => (
@@ -89,32 +87,6 @@ const EvaluateIcon = (props: IconProps) => (
   </IconBase>
 );
 
-const CalendarIcon = (props: IconProps) => (
-  <IconBase {...props}>
-    <rect x="4.75" y="5.75" width="14.5" height="13.5" rx="2" stroke="currentColor" strokeWidth="1.6" />
-    <path d="M8 3.75v4M16 3.75v4M4.75 10h14.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    <path d="M8 13.25h2.2M13.8 13.25H16M8 16.4h2.2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-  </IconBase>
-);
-
-const UserAdminIcon = (props: IconProps) => (
-  <IconBase {...props}>
-    <circle cx="9.5" cy="8.5" r="3" stroke="currentColor" strokeWidth="1.6" />
-    <path
-      d="M4.25 18.5c.9-3 2.75-4.45 5.25-4.45 1.35 0 2.5.42 3.45 1.25"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-    />
-    <path
-      d="M16.25 13.4l3.25 1.25v2.2c0 2.05-1.2 3.3-3.25 4.15-2.05-.85-3.25-2.1-3.25-4.15v-2.2l3.25-1.25Z"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinejoin="round"
-    />
-  </IconBase>
-);
-
 const ReadinessIcon = (props: IconProps) => (
   <IconBase {...props}>
     <path
@@ -133,31 +105,6 @@ const ReadinessIcon = (props: IconProps) => (
   </IconBase>
 );
 
-const IssueIcon = (props: IconProps) => (
-  <IconBase {...props}>
-    <path
-      d="M7 3.75h7.2L19 8.55v11.7H7V3.75Z"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinejoin="round"
-    />
-    <path d="M14 4v5h5" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-    <path d="M12 11.25v3.25M12 17.2h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-  </IconBase>
-);
-
-const RankGroupIcon = (props: IconProps) => (
-  <IconBase {...props}>
-    <path
-      d="M12 4.25 20 8.5l-8 4.25L4 8.5l8-4.25Z"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinejoin="round"
-    />
-    <path d="M4 12.25 12 16.5l8-4.25M4 16 12 20.25 20 16" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-  </IconBase>
-);
-
 const QuestionIcon = (props: IconProps) => (
   <IconBase {...props}>
     <circle cx="12" cy="12" r="8.25" stroke="currentColor" strokeWidth="1.6" />
@@ -171,39 +118,11 @@ const QuestionIcon = (props: IconProps) => (
   </IconBase>
 );
 
-const DescriptionIcon = (props: IconProps) => (
-  <IconBase {...props}>
-    <path
-      d="M6.5 4.25h8.25l2.75 2.75v12.75h-11V4.25Z"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinejoin="round"
-    />
-    <path d="M14.5 4.5v3h3M9 11.25h6M9 14.35h6M9 17.45h4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-  </IconBase>
-);
-
 const EmployeeIcon = (props: IconProps) => (
   <IconBase {...props}>
     <rect x="4.75" y="5.25" width="14.5" height="13.5" rx="2" stroke="currentColor" strokeWidth="1.6" />
     <circle cx="10" cy="10.1" r="2" stroke="currentColor" strokeWidth="1.6" />
     <path d="M7.25 15.25c.55-1.65 1.5-2.45 2.75-2.45s2.2.8 2.75 2.45M14.8 10.25h2.1M14.8 13.25h2.1M14.8 16.25h2.1" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-  </IconBase>
-);
-
-const AssignmentIcon = (props: IconProps) => (
-  <IconBase {...props}>
-    <circle cx="8.75" cy="8.25" r="2.75" stroke="currentColor" strokeWidth="1.6" />
-    <path d="M4.25 18.25c.8-3 2.3-4.45 4.5-4.45 1.5 0 2.7.68 3.55 2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    <path d="M14.25 8.25h5.5M14.25 12h5.5M15 17.1l1.65 1.65 3.1-3.25" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-  </IconBase>
-);
-
-const WeightIcon = (props: IconProps) => (
-  <IconBase {...props}>
-    <path d="M12 4.25v15.5M7 7.25h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    <path d="M7 7.25 4.75 12h4.5L7 7.25ZM17 7.25 14.75 12h4.5L17 7.25Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-    <path d="M8.25 19.75h7.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
   </IconBase>
 );
 
@@ -244,6 +163,12 @@ type CurrentUser = {
   is_admin: boolean;
 };
 
+const appBasePath = (process.env.NEXT_PUBLIC_BASE_PATH || "").replace(/\/+$/, "");
+
+function apiPath(path: string) {
+  return `${appBasePath}${path}`;
+}
+
 const mainItems: Array<NavItem & { icon: React.ReactNode }> = [
   { icon: <DashboardIcon />, name: "หน้าหลัก", path: "/dashboard" },
   { icon: <EvaluateIcon />, name: "รายการประเมิน", path: "/evaluations" },
@@ -279,8 +204,8 @@ const adminGroups: NavGroup[] = [
     icon: <QuestionIcon />,
     items: [
       { name: "หัวข้อประเมิน", path: "/admin/questions" },
-      { name: "คำอธิบายหัวข้อ", path: "/admin/question-descriptions" },
-      { name: "น้ำหนักคะแนน", path: "/admin/evaluator-weights" },
+      { name: "หัวข้อประเมินตามวิชาชีพ", path: "/admin/profession-questions" },
+      { name: "น้ำหนักผู้ประเมิน", path: "/admin/evaluator-weights" },
     ],
   },
   {
@@ -288,6 +213,9 @@ const adminGroups: NavGroup[] = [
     icon: <EmployeeIcon />,
     items: [
       { name: "กลุ่มระดับ", path: "/admin/rank-groups" },
+      { name: "ระดับข้าราชการ", path: "/admin/rank-group-maps" },
+      { name: "ช่วงอายุงาน", path: "/admin/tenure-rank-groups" },
+      { name: "เปอร์เซ็นต์ Competency", path: "/admin/site-percents" },
       { name: "หน่วยเบิกที่ไม่ประเมิน", path: "/admin/section-exclusions" },
       { name: "ผู้ถูกประเมิน", path: "/admin/round-employees" },
       { name: "กำหนดผู้ประเมิน", path: "/admin/assignments" },
@@ -296,7 +224,7 @@ const adminGroups: NavGroup[] = [
   {
     name: "รายงาน",
     icon: <ReportIcon />,
-    items: [{ name: "รายงานผล", path: "/admin/reports" }],
+    items: [{ name: "รายงานผล", path: "/reports" }],
   },
 ];
 
@@ -322,7 +250,7 @@ const AppSidebar: React.FC = () => {
 
   useEffect(() => {
     let active = true;
-    fetch(`${basePath}/api/auth/me`)
+    fetch(apiPath("/api/auth/me"))
       .then((response) => (response.ok ? response.json() : null))
       .then((data) => {
         if (active && data?.user) setUser(data.user);
@@ -340,7 +268,7 @@ const AppSidebar: React.FC = () => {
     }
 
     let active = true;
-    fetch("/api/admin/round-status-summary", { cache: "no-store" })
+    fetch(apiPath("/api/admin/round-status-summary"), { cache: "no-store" })
       .then((response) => (response.ok ? response.json() : null))
       .then((data) => {
         if (active && data?.ok) setRoundStatusSummary(data);

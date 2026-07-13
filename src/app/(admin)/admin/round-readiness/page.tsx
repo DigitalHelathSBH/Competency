@@ -26,6 +26,9 @@ type SummaryCounts = {
   missingRankGroup: number;
   missingPositionCode: number;
   missingDivisionCode: number;
+  missingTenureData: number;
+  invalidGroupSource: number;
+  invalidCompetencyPercent: number;
   missingLevel1: number;
   missingLevel2: number;
   selfAssignment: number;
@@ -35,7 +38,9 @@ type SummaryCounts = {
   duplicateAssignmentLevel: number;
   missingWeightScope: number;
   missingCommonQuestion: number;
-  missingProfessionQuestion: number;
+  partialProfessionSet: number;
+  invalidProfessionTopic: number;
+  duplicateProfessionTopic: number;
   missingDescription: number;
 };
 
@@ -45,19 +50,6 @@ type ProblemRow = {
   problem_text: string;
   reference_text: string;
   menu_hint: string;
-};
-
-type WeightRule = {
-  scope_value: string;
-  level1_weight: number;
-  level2_weight: number;
-  total_weight: number;
-  level_count: number;
-};
-
-type WeightScope = {
-  scope_value: string;
-  scope_label: string;
 };
 
 type ReadinessResult = {
@@ -86,10 +78,13 @@ function getMenuLabel(path: string) {
     "/admin/round-issues": "รายการที่ต้องแก้ไข",
     "/admin/round-employees": "ผู้ถูกประเมิน",
     "/admin/rank-groups": "กลุ่มระดับ",
+    "/admin/rank-group-maps": "ระดับข้าราชการ",
+    "/admin/tenure-rank-groups": "ช่วงอายุงาน",
+    "/admin/site-percents": "เปอร์เซ็นต์ Competency",
     "/admin/assignments": "กำหนดผู้ประเมิน",
-    "/admin/evaluator-weights": "น้ำหนักคะแนน",
+    "/admin/evaluator-weights": "น้ำหนักผู้ประเมิน",
     "/admin/questions": "หัวข้อประเมิน",
-    "/admin/question-descriptions": "คำอธิบายหัวข้อ",
+    "/admin/profession-questions": "หัวข้อประเมินตามวิชาชีพ",
   };
 
   return menuMap[path] || path;
@@ -105,6 +100,9 @@ function emptyCounts(): SummaryCounts {
     missingRankGroup: 0,
     missingPositionCode: 0,
     missingDivisionCode: 0,
+    missingTenureData: 0,
+    invalidGroupSource: 0,
+    invalidCompetencyPercent: 0,
     missingLevel1: 0,
     missingLevel2: 0,
     selfAssignment: 0,
@@ -114,7 +112,9 @@ function emptyCounts(): SummaryCounts {
     duplicateAssignmentLevel: 0,
     missingWeightScope: 0,
     missingCommonQuestion: 0,
-    missingProfessionQuestion: 0,
+    partialProfessionSet: 0,
+    invalidProfessionTopic: 0,
+    duplicateProfessionTopic: 0,
     missingDescription: 0,
   };
 }
@@ -135,15 +135,6 @@ function getProblemLevelText(level: ProblemRow["problem_level"]) {
   if (level === "error") return "ต้องแก้";
   if (level === "warning") return "ควรตรวจ";
   return "ข้อมูล";
-}
-
-function formatPercent(value: number) {
-  return `${value.toFixed(2)}%`;
-}
-
-function isWeightComplete(rule: WeightRule | undefined) {
-  if (!rule) return false;
-  return rule.level_count >= 2 && Math.abs(Number(rule.total_weight || 0) - 100) < 0.01;
 }
 
 async function getDraftRounds() {
@@ -174,9 +165,7 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
 
   const pool = await getDbPool();
 
-  const roundResult = await pool
-    .request()
-    .input("round_id", sql.Int, roundId)
+  const roundResult = await pool.request().input("round_id", sql.Int, roundId)
     .query(`
       SELECT TOP 1
         round_id,
@@ -197,7 +186,7 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
           problem_type: "รอบประเมิน",
           problem_level: "error",
           problem_text: "ไม่พบรอบประเมินที่เลือก",
-          reference_text: `round_id: ${roundId}`,
+          reference_text: "กรุณาเลือกรอบประเมินใหม่",
           menu_hint: "/admin/rounds",
         },
       ],
@@ -205,15 +194,38 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
     };
   }
 
-  const baseResult = await pool
-    .request()
-    .input("round_id", sql.Int, roundId)
+  const baseResult = await pool.request().input("round_id", sql.Int, roundId)
     .query(`
       SELECT
         COUNT(*) AS total_employees,
         SUM(CASE WHEN re.rank_group_id IS NULL THEN 1 ELSE 0 END) AS missing_rank_group,
         SUM(CASE WHEN NULLIF(LTRIM(RTRIM(ISNULL(re.position_code, ''))), '') IS NULL THEN 1 ELSE 0 END) AS missing_position_code,
-        SUM(CASE WHEN NULLIF(LTRIM(RTRIM(ISNULL(re.division_code, ''))), '') IS NULL THEN 1 ELSE 0 END) AS missing_division_code
+        SUM(CASE WHEN NULLIF(LTRIM(RTRIM(ISNULL(re.division_code, ''))), '') IS NULL THEN 1 ELSE 0 END) AS missing_division_code,
+        SUM(
+          CASE
+            WHEN re.rank_group_source = 'TENURE'
+              AND (re.first_employee_date IS NULL OR re.service_year IS NULL)
+            THEN 1
+            ELSE 0
+          END
+        ) AS missing_tenure_data,
+        SUM(
+          CASE
+            WHEN re.rank_group_source IS NULL
+              OR re.rank_group_source NOT IN ('RANK', 'TENURE')
+            THEN 1
+            ELSE 0
+          END
+        ) AS invalid_group_source,
+        SUM(
+          CASE
+            WHEN re.competency_percent IS NULL
+              OR re.competency_percent < 0
+              OR re.competency_percent > 100
+            THEN 1
+            ELSE 0
+          END
+        ) AS invalid_competency_percent
       FROM dbo.competency_round_employee re
       WHERE re.round_id = @round_id
         AND re.status_type <> 9;
@@ -221,16 +233,20 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
 
   const assignmentResult = await pool
     .request()
-    .input("round_id", sql.Int, roundId)
-    .query(`
+    .input("round_id", sql.Int, roundId).query(`
       SELECT
         SUM(CASE WHEN ISNULL(a1.assignment_count, 0) = 0 THEN 1 ELSE 0 END) AS missing_level_1,
-        SUM(CASE WHEN ISNULL(re.evaluator_required_type, 2) = 2 AND ISNULL(a2.assignment_count, 0) = 0 THEN 1 ELSE 0 END) AS missing_level_2
+        SUM(
+          CASE
+            WHEN ISNULL(re.evaluator_required_type, 2) = 2
+              AND ISNULL(a2.assignment_count, 0) = 0
+            THEN 1
+            ELSE 0
+          END
+        ) AS missing_level_2
       FROM dbo.competency_round_employee re
       LEFT JOIN (
-        SELECT
-          round_employee_id,
-          COUNT(*) AS assignment_count
+        SELECT round_employee_id, COUNT(*) AS assignment_count
         FROM dbo.competency_evaluator_assignment
         WHERE evaluator_level = 1
           AND status_type <> 9
@@ -238,9 +254,7 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
       ) a1
         ON a1.round_employee_id = re.round_employee_id
       LEFT JOIN (
-        SELECT
-          round_employee_id,
-          COUNT(*) AS assignment_count
+        SELECT round_employee_id, COUNT(*) AS assignment_count
         FROM dbo.competency_evaluator_assignment
         WHERE evaluator_level = 2
           AND status_type <> 9
@@ -253,36 +267,128 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
 
   const invalidAssignmentResult = await pool
     .request()
-    .input("round_id", sql.Int, roundId)
-    .query(`
+    .input("round_id", sql.Int, roundId).query(`
+      WITH evaluator_base AS (
+        SELECT
+          ea.evaluator_payroll_no,
+          re.payroll_no AS employee_payroll_no,
+          re.rank_group_id AS employee_rank_group_id,
+          ev.PAYROLLNO AS found_payroll_no,
+          ev.TERMINATEDATE,
+          NULLIF(LTRIM(RTRIM(CAST(ev.[RANK] AS varchar(20)))), '') AS evaluator_rank_code,
+          NULLIF(LTRIM(RTRIM(CAST(ev.SITECODE AS varchar(20)))), '') AS evaluator_site_code,
+          TRY_CONVERT(date, ev.FIRSTEMPLOYEEDATE) AS evaluator_first_employee_date,
+          r.start_date
+        FROM dbo.competency_evaluator_assignment ea
+        JOIN dbo.competency_round_employee re
+          ON re.round_employee_id = ea.round_employee_id
+         AND re.round_id = @round_id
+         AND re.status_type <> 9
+        JOIN dbo.competency_round r
+          ON r.round_id = re.round_id
+        LEFT JOIN ${ssbDb()}.dbo.PYREXT ev
+          ON CAST(ev.PAYROLLNO AS varchar(20)) = ea.evaluator_payroll_no
+        WHERE ea.status_type <> 9
+      ),
+      evaluator_calc AS (
+        SELECT
+          b.*,
+          CASE
+            WHEN b.evaluator_first_employee_date IS NULL
+              OR b.evaluator_first_employee_date > b.start_date
+            THEN NULL
+            ELSE
+              DATEDIFF(YEAR, b.evaluator_first_employee_date, b.start_date)
+              - CASE
+                  WHEN DATEADD(
+                    YEAR,
+                    DATEDIFF(YEAR, b.evaluator_first_employee_date, b.start_date),
+                    b.evaluator_first_employee_date
+                  ) > b.start_date
+                  THEN 1
+                  ELSE 0
+                END
+          END AS evaluator_service_year,
+          CASE
+            WHEN ISNULL(b.evaluator_site_code, '') = '1' THEN 'RANK'
+            ELSE 'TENURE'
+          END AS evaluator_rank_group_source
+        FROM evaluator_base b
+      ),
+      evaluator_resolved AS (
+        SELECT
+          c.*,
+          CASE
+            WHEN c.evaluator_rank_group_source = 'RANK' THEN rank_map.rank_group_id
+            ELSE tenure_map.rank_group_id
+          END AS evaluator_rank_group_id
+        FROM evaluator_calc c
+        OUTER APPLY (
+          SELECT TOP 1 rg.rank_group_id
+          FROM dbo.competency_rank_group_map rgm
+          JOIN dbo.competency_rank_group rg
+            ON rg.rank_group_id = rgm.rank_group_id
+           AND rg.active_status = 1
+          WHERE rgm.active_status = 1
+            AND rgm.rank_code = c.evaluator_rank_code
+          ORDER BY rgm.rank_group_map_id DESC
+        ) rank_map
+        OUTER APPLY (
+          SELECT TOP 1 rg.rank_group_id
+          FROM dbo.competency_tenure_rank_group trg
+          JOIN dbo.competency_rank_group rg
+            ON rg.rank_group_id = trg.rank_group_id
+           AND rg.active_status = 1
+          WHERE trg.active_status = 1
+            AND c.evaluator_service_year IS NOT NULL
+            AND c.evaluator_service_year >= trg.min_service_year
+            AND (trg.max_service_year IS NULL OR c.evaluator_service_year < trg.max_service_year)
+          ORDER BY trg.min_service_year DESC, trg.tenure_rank_group_id DESC
+        ) tenure_map
+      )
       SELECT
-        SUM(CASE WHEN a.evaluator_payroll_no = re.payroll_no THEN 1 ELSE 0 END) AS self_assignment,
-        SUM(CASE WHEN p.PAYROLLNO IS NULL OR p.TERMINATEDATE IS NOT NULL THEN 1 ELSE 0 END) AS inactive_evaluator,
-        SUM(CASE WHEN p.PAYROLLNO IS NOT NULL AND p.TERMINATEDATE IS NULL AND eval_rg.rank_group_id IS NULL THEN 1 ELSE 0 END) AS unmapped_evaluator_rank,
-        SUM(CASE WHEN eval_rg.rank_group_id IS NOT NULL AND emp_rg.rank_group_id IS NOT NULL AND eval_rg.sort_order < emp_rg.sort_order THEN 1 ELSE 0 END) AS lower_rank_evaluator
-      FROM dbo.competency_evaluator_assignment a
-      JOIN dbo.competency_round_employee re
-        ON re.round_employee_id = a.round_employee_id
-      LEFT JOIN ${ssbDb()}.dbo.PYREXT p
-        ON p.PAYROLLNO = a.evaluator_payroll_no
-      LEFT JOIN dbo.competency_rank_group emp_rg
-        ON emp_rg.rank_group_id = re.rank_group_id
-       AND emp_rg.active_status = 1
-      LEFT JOIN dbo.competency_rank_group_map eval_rgm
-        ON eval_rgm.rank_code = NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '')
-       AND eval_rgm.active_status = 1
-      LEFT JOIN dbo.competency_rank_group eval_rg
-        ON eval_rg.rank_group_id = eval_rgm.rank_group_id
-       AND eval_rg.active_status = 1
-      WHERE re.round_id = @round_id
-        AND re.status_type <> 9
-        AND a.status_type <> 9;
+        SUM(
+          CASE
+            WHEN evaluator_payroll_no = employee_payroll_no THEN 1
+            ELSE 0
+          END
+        ) AS self_assignment,
+        SUM(
+          CASE
+            WHEN found_payroll_no IS NULL OR TERMINATEDATE IS NOT NULL THEN 1
+            ELSE 0
+          END
+        ) AS inactive_evaluator,
+        SUM(
+          CASE
+            WHEN found_payroll_no IS NOT NULL
+              AND TERMINATEDATE IS NULL
+              AND evaluator_rank_group_id IS NULL
+            THEN 1
+            ELSE 0
+          END
+        ) AS unmapped_evaluator_rank,
+        SUM(
+          CASE
+            WHEN evaluator_group.rank_group_id IS NOT NULL
+              AND employee_group.rank_group_id IS NOT NULL
+              AND evaluator_group.sort_order < employee_group.sort_order
+            THEN 1
+            ELSE 0
+          END
+        ) AS lower_rank_evaluator
+      FROM evaluator_resolved resolved
+      LEFT JOIN dbo.competency_rank_group evaluator_group
+        ON evaluator_group.rank_group_id = resolved.evaluator_rank_group_id
+       AND evaluator_group.active_status = 1
+      LEFT JOIN dbo.competency_rank_group employee_group
+        ON employee_group.rank_group_id = resolved.employee_rank_group_id
+       AND employee_group.active_status = 1;
     `);
 
   const duplicateAssignmentResult = await pool
     .request()
-    .input("round_id", sql.Int, roundId)
-    .query(`
+    .input("round_id", sql.Int, roundId).query(`
       SELECT COUNT(*) AS duplicate_assignment_level
       FROM (
         SELECT
@@ -299,164 +405,238 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
       ) x;
     `);
 
-  const questionResult = await pool
+  const invalidWeightScopeResult = await pool
     .request()
-    .input("round_id", sql.Int, roundId)
-    .query(`
-      SELECT COUNT(*) AS missing_common_question
-      FROM (VALUES (1), (2), (3), (4)) qn(question_no)
-      WHERE NOT EXISTS (
-        SELECT 1
+    .input("round_id", sql.Int, roundId).query(`
+      WITH RequiredScopes AS (
+        SELECT DISTINCT
+          ISNULL(
+            NULLIF(LTRIM(RTRIM(CAST(re.division_code AS varchar(20)))), ''),
+            '__NO_DIVISION__'
+          ) AS scope_value
+        FROM dbo.competency_round_employee re
+        WHERE re.round_id = @round_id
+          AND re.status_type <> 9
+          AND ISNULL(re.evaluator_required_type, 2) = 2
+      ),
+      WeightRules AS (
+        SELECT
+          ISNULL(
+            NULLIF(LTRIM(RTRIM(CAST(w.division_code AS varchar(20)))), ''),
+            '__DEFAULT__'
+          ) AS scope_value,
+          COUNT(CASE WHEN w.active_status = 1 THEN 1 END) AS active_row_count,
+          COUNT(
+            DISTINCT CASE
+              WHEN w.active_status = 1
+                AND w.evaluator_level IN (1, 2)
+              THEN w.evaluator_level
+            END
+          ) AS level_count,
+          SUM(
+            CASE
+              WHEN w.active_status = 1
+              THEN CAST(w.weight_percent AS decimal(10,2))
+              ELSE 0
+            END
+          ) AS total_weight
+        FROM dbo.competency_evaluator_weight w
+        WHERE w.round_id = @round_id
+        GROUP BY ISNULL(
+          NULLIF(LTRIM(RTRIM(CAST(w.division_code AS varchar(20)))), ''),
+          '__DEFAULT__'
+        )
+      )
+      SELECT COUNT(*) AS invalid_scope_count
+      FROM RequiredScopes required_scope
+      LEFT JOIN WeightRules specific_rule
+        ON specific_rule.scope_value = required_scope.scope_value
+      LEFT JOIN WeightRules default_rule
+        ON default_rule.scope_value = '__DEFAULT__'
+      WHERE
+        (
+          ISNULL(specific_rule.active_row_count, 0) > 0
+          AND (
+            ISNULL(specific_rule.level_count, 0) <> 2
+            OR ABS(ISNULL(specific_rule.total_weight, 0) - 100) >= 0.01
+          )
+        )
+        OR
+        (
+          ISNULL(specific_rule.active_row_count, 0) = 0
+          AND (
+            ISNULL(default_rule.level_count, 0) <> 2
+            OR ABS(ISNULL(default_rule.total_weight, 0) - 100) >= 0.01
+          )
+        );
+    `);
+
+  const commonQuestionResult = await pool.request().query(`
+    SELECT
+      4 - COUNT(DISTINCT q.fixed_question_no) AS missing_common_question
+    FROM dbo.competency_question q
+    JOIN dbo.competency_question_version qv
+      ON qv.question_id = q.question_id
+     AND qv.is_current = 1
+     AND qv.active_status = 1
+    WHERE q.active_status = 1
+      AND q.question_scope = 'COMMON'
+      AND q.fixed_question_no BETWEEN 1 AND 4;
+  `);
+
+  const professionQuestionResult = await pool
+    .request()
+    .input("round_id", sql.Int, roundId).query(`
+      WITH round_positions AS (
+        SELECT DISTINCT NULLIF(LTRIM(RTRIM(position_code)), '') AS position_code
+        FROM dbo.competency_round_employee
+        WHERE round_id = @round_id
+          AND status_type <> 9
+          AND NULLIF(LTRIM(RTRIM(position_code)), '') IS NOT NULL
+      ),
+      map_summary AS (
+        SELECT
+          rp.position_code,
+          COUNT(DISTINCT CASE WHEN m.active_status = 1 THEN m.question_no END) AS active_map_count,
+          COUNT(
+            DISTINCT CASE
+              WHEN m.active_status = 1
+                AND q.question_scope = 'PROFESSION'
+                AND q.active_status = 1
+                AND qv.question_version_id IS NOT NULL
+              THEN m.question_no
+            END
+          ) AS valid_map_count,
+          COUNT(
+            DISTINCT CASE
+              WHEN m.active_status = 1
+                AND q.question_scope = 'PROFESSION'
+                AND q.active_status = 1
+                AND qv.question_version_id IS NOT NULL
+              THEN m.question_id
+            END
+          ) AS distinct_topic_count
+        FROM round_positions rp
+        LEFT JOIN dbo.competency_profession_question_map m
+          ON m.position_code = rp.position_code
+         AND m.active_status = 1
+        LEFT JOIN dbo.competency_question q
+          ON q.question_id = m.question_id
+        LEFT JOIN dbo.competency_question_version qv
+          ON qv.question_id = q.question_id
+         AND qv.is_current = 1
+         AND qv.active_status = 1
+        GROUP BY rp.position_code
+      )
+      SELECT
+        SUM(CASE WHEN active_map_count NOT IN (0, 3) THEN 1 ELSE 0 END) AS partial_count,
+        SUM(CASE WHEN active_map_count = 3 AND valid_map_count <> 3 THEN 1 ELSE 0 END) AS invalid_topic_count,
+        SUM(CASE WHEN active_map_count = 3 AND distinct_topic_count <> 3 THEN 1 ELSE 0 END) AS duplicate_topic_count
+      FROM map_summary;
+    `);
+
+  const descriptionResult = await pool
+    .request()
+    .input("round_id", sql.Int, roundId).query(`
+      WITH active_employees AS (
+        SELECT DISTINCT
+          NULLIF(LTRIM(RTRIM(position_code)), '') AS position_code,
+          rank_group_id
+        FROM dbo.competency_round_employee
+        WHERE round_id = @round_id
+          AND status_type <> 9
+          AND rank_group_id IS NOT NULL
+      ),
+      common_questions AS (
+        SELECT qv.question_version_id
         FROM dbo.competency_question q
         JOIN dbo.competency_question_version qv
           ON qv.question_id = q.question_id
          AND qv.is_current = 1
          AND qv.active_status = 1
-        WHERE q.question_no = qn.question_no
+        WHERE q.active_status = 1
           AND q.question_scope = 'COMMON'
-          AND q.active_status = 1
-      );
-
-      SELECT COUNT(*) AS missing_profession_question
-      FROM (
-        SELECT DISTINCT
-          re.position_code,
-          qn.question_no
-        FROM dbo.competency_round_employee re
-        CROSS JOIN (VALUES (5), (6), (7)) qn(question_no)
-        WHERE re.round_id = @round_id
-          AND re.status_type <> 9
-          AND NULLIF(LTRIM(RTRIM(ISNULL(re.position_code, ''))), '') IS NOT NULL
-          AND NOT EXISTS (
-            SELECT 1
-            FROM dbo.competency_question q
-            JOIN dbo.competency_question_version qv
-              ON qv.question_id = q.question_id
-             AND qv.is_current = 1
-             AND qv.active_status = 1
-            WHERE q.question_no = qn.question_no
-              AND q.question_scope = 'PROFESSION'
-              AND q.position_code = re.position_code
-              AND q.active_status = 1
-          )
-      ) x;
-
-      SELECT COUNT(*) AS missing_description
-      FROM (
-        SELECT DISTINCT
-          q.question_no,
-          re.rank_group_id
-        FROM dbo.competency_round_employee re
+          AND q.fixed_question_no BETWEEN 1 AND 4
+      ),
+      profession_questions AS (
+        SELECT
+          m.position_code,
+          qv.question_version_id
+        FROM dbo.competency_profession_question_map m
         JOIN dbo.competency_question q
-          ON q.active_status = 1
-         AND (
-              (q.question_scope = 'COMMON' AND q.question_no BETWEEN 1 AND 4)
-              OR
-              (q.question_scope = 'PROFESSION' AND q.question_no BETWEEN 5 AND 7 AND q.position_code = re.position_code)
-         )
+          ON q.question_id = m.question_id
+         AND q.question_scope = 'PROFESSION'
+         AND q.active_status = 1
         JOIN dbo.competency_question_version qv
           ON qv.question_id = q.question_id
          AND qv.is_current = 1
          AND qv.active_status = 1
-        WHERE re.round_id = @round_id
-          AND re.status_type <> 9
-          AND re.rank_group_id IS NOT NULL
-      ) x
+        WHERE m.active_status = 1
+      ),
+      required_pairs AS (
+        SELECT DISTINCT
+          ae.rank_group_id,
+          cq.question_version_id
+        FROM active_employees ae
+        CROSS JOIN common_questions cq
+
+        UNION
+
+        SELECT DISTINCT
+          ae.rank_group_id,
+          pq.question_version_id
+        FROM active_employees ae
+        JOIN profession_questions pq
+          ON pq.position_code = ae.position_code
+      )
+      SELECT COUNT(*) AS missing_description_count
+      FROM required_pairs rp
       WHERE NOT EXISTS (
         SELECT 1
-        FROM dbo.competency_question_description_version qdv
-        WHERE qdv.question_no = x.question_no
-          AND qdv.rank_group_id = x.rank_group_id
-          AND qdv.is_current = 1
-          AND qdv.active_status = 1
+        FROM dbo.competency_question_description_version dv
+        WHERE dv.question_version_id = rp.question_version_id
+          AND dv.rank_group_id = rp.rank_group_id
+          AND dv.active_status = 1
       );
-    `);
-
-  const weightScopeResult = await pool
-    .request()
-    .input("round_id", sql.Int, roundId)
-    .query(`
-      SELECT DISTINCT
-        '__DEFAULT__' AS scope_value,
-        N'ค่า default ทุกกลุ่มภารกิจ' AS scope_label
-      UNION ALL
-      SELECT DISTINCT
-        NULLIF(LTRIM(RTRIM(CAST(re.division_code AS varchar(20)))), '') AS scope_value,
-        ${ssbDb()}.dbo.GetSSBName(ISNULL(ds.thainame, ds.englishname)) + N' (' + NULLIF(LTRIM(RTRIM(CAST(re.division_code AS varchar(20)))), '') + N')' AS scope_label
-      FROM dbo.competency_round_employee re
-      LEFT JOIN ${ssbDb()}.dbo.SYSCONFIG ds
-        ON ds.CODE = re.division_code
-       AND ds.CTRLCODE = '10028'
-      WHERE re.round_id = @round_id
-        AND re.status_type <> 9
-        AND NULLIF(LTRIM(RTRIM(CAST(re.division_code AS varchar(20)))), '') IS NOT NULL;
-    `);
-
-  const weightRuleResult = await pool
-    .request()
-    .input("round_id", sql.Int, roundId)
-    .query(`
-      SELECT
-        ISNULL(NULLIF(LTRIM(RTRIM(CAST(division_code AS varchar(20)))), ''), '__DEFAULT__') AS scope_value,
-        SUM(CASE WHEN evaluator_level = 1 AND active_status = 1 THEN CAST(weight_percent AS decimal(10,2)) ELSE 0 END) AS level1_weight,
-        SUM(CASE WHEN evaluator_level = 2 AND active_status = 1 THEN CAST(weight_percent AS decimal(10,2)) ELSE 0 END) AS level2_weight,
-        SUM(CASE WHEN active_status = 1 THEN CAST(weight_percent AS decimal(10,2)) ELSE 0 END) AS total_weight,
-        COUNT(DISTINCT CASE WHEN active_status = 1 THEN evaluator_level END) AS level_count
-      FROM dbo.competency_evaluator_weight
-      WHERE round_id = @round_id
-      GROUP BY ISNULL(NULLIF(LTRIM(RTRIM(CAST(division_code AS varchar(20)))), ''), '__DEFAULT__');
     `);
 
   const base = baseResult.recordset[0] || {};
   const assignment = assignmentResult.recordset[0] || {};
   const invalidAssignment = invalidAssignmentResult.recordset[0] || {};
   const duplicateAssignment = duplicateAssignmentResult.recordset[0] || {};
-
-  const weightRules = (weightRuleResult.recordset as WeightRule[]).map((rule) => ({
-    ...rule,
-    level1_weight: Number(rule.level1_weight || 0),
-    level2_weight: Number(rule.level2_weight || 0),
-    total_weight: Number(rule.total_weight || 0),
-    level_count: Number(rule.level_count || 0),
-  }));
-
-  const weightRuleMap = new Map(weightRules.map((rule) => [rule.scope_value, rule]));
-  const defaultWeightRule = weightRuleMap.get("__DEFAULT__");
-  const defaultComplete = isWeightComplete(defaultWeightRule);
-
-  const weightScopes = weightScopeResult.recordset as WeightScope[];
-  const missingWeightScopes = weightScopes.filter((scope) => {
-    if (scope.scope_value === "__DEFAULT__") {
-      return !defaultComplete;
-    }
-
-    const divisionRule = weightRuleMap.get(scope.scope_value);
-    return !isWeightComplete(divisionRule) && !defaultComplete;
-  });
- 
-  const questionRecordsets =
-    questionResult.recordsets as unknown as Array<Array<Record<string, unknown>>>;
-
-  const commonQuestionCheck = questionRecordsets[0]?.[0] ?? {};
-  const professionQuestionCheck = questionRecordsets[1]?.[0] ?? {};
-  const descriptionCheck = questionRecordsets[2]?.[0] ?? {};
+  const invalidWeightScope = invalidWeightScopeResult.recordset[0] || {};
+  const commonQuestion = commonQuestionResult.recordset[0] || {};
+  const professionQuestion = professionQuestionResult.recordset[0] || {};
+  const description = descriptionResult.recordset[0] || {};
 
   const counts: SummaryCounts = {
     totalEmployees: toNumber(base.total_employees),
     missingRankGroup: toNumber(base.missing_rank_group),
     missingPositionCode: toNumber(base.missing_position_code),
     missingDivisionCode: toNumber(base.missing_division_code),
+    missingTenureData: toNumber(base.missing_tenure_data),
+    invalidGroupSource: toNumber(base.invalid_group_source),
+    invalidCompetencyPercent: toNumber(base.invalid_competency_percent),
     missingLevel1: toNumber(assignment.missing_level_1),
     missingLevel2: toNumber(assignment.missing_level_2),
     selfAssignment: toNumber(invalidAssignment.self_assignment),
     inactiveEvaluator: toNumber(invalidAssignment.inactive_evaluator),
     unmappedEvaluatorRank: toNumber(invalidAssignment.unmapped_evaluator_rank),
     lowerRankEvaluator: toNumber(invalidAssignment.lower_rank_evaluator),
-    duplicateAssignmentLevel: toNumber(duplicateAssignment.duplicate_assignment_level),
-    missingWeightScope: missingWeightScopes.length,
-    missingCommonQuestion: toNumber(commonQuestionCheck.missing_common_question),
-    missingProfessionQuestion: toNumber(professionQuestionCheck.missing_profession_question),
-    missingDescription: toNumber(descriptionCheck.missing_description),
+    duplicateAssignmentLevel: toNumber(
+      duplicateAssignment.duplicate_assignment_level,
+    ),
+    missingWeightScope: toNumber(invalidWeightScope.invalid_scope_count),
+    missingCommonQuestion: Math.max(
+      0,
+      toNumber(commonQuestion.missing_common_question),
+    ),
+    partialProfessionSet: toNumber(professionQuestion.partial_count),
+    invalidProfessionTopic: toNumber(professionQuestion.invalid_topic_count),
+    duplicateProfessionTopic: toNumber(
+      professionQuestion.duplicate_topic_count,
+    ),
+    missingDescription: toNumber(description.missing_description_count),
   };
 
   const problems: ProblemRow[] = [];
@@ -465,7 +645,7 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
     problems.push({
       problem_type: "รอบประเมิน",
       problem_level: "error",
-      problem_text: `รอบนี้อยู่สถานะ ${roundStatusText(Number(round.status_type))} ไม่ใช่สถานะร่าง`,
+      problem_text: `รอบนี้อยู่สถานะ ${roundStatusText(Number(round.status_type))} ไม่สามารถเปิดซ้ำได้`,
       reference_text: round.round_code,
       menu_hint: "/admin/rounds",
     });
@@ -476,7 +656,7 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
       problem_type: "ผู้ถูกประเมิน",
       problem_level: "error",
       problem_text: "ยังไม่มีผู้ถูกประเมินในรอบนี้",
-      reference_text: round.round_code,
+      reference_text: "เพิ่มรายชื่อผู้ถูกประเมินก่อนเปิดรอบ",
       menu_hint: "/admin/round-employees",
     });
   }
@@ -485,18 +665,18 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
     problems.push({
       problem_type: "ผู้ถูกประเมิน",
       problem_level: "error",
-      problem_text: `มีผู้ถูกประเมินที่ยังไม่มี rank_group ${counts.missingRankGroup} คน`,
-      reference_text: "rank_group_id ว่าง",
-      menu_hint: "/admin/rank-groups",
+      problem_text: `มีผู้ถูกประเมินที่ยังไม่มีกลุ่มระดับ ${counts.missingRankGroup.toLocaleString()} คน`,
+      reference_text: "ตรวจสอบการตั้งค่าระดับข้าราชการหรือช่วงอายุงาน",
+      menu_hint: "/admin/round-employees",
     });
   }
 
   if (counts.missingPositionCode > 0) {
     problems.push({
       problem_type: "ผู้ถูกประเมิน",
-      problem_level: "warning",
-      problem_text: `มีผู้ถูกประเมินที่ไม่มี position_code ${counts.missingPositionCode} คน`,
-      reference_text: "อาจกระทบคำถาม PROFESSION",
+      problem_level: "error",
+      problem_text: `มีผู้ถูกประเมินที่ยังไม่มีข้อมูลวิชาชีพ ${counts.missingPositionCode.toLocaleString()} คน`,
+      reference_text: "ข้อมูลวิชาชีพจำเป็นต่อการเลือกชุดหัวข้อประเมิน",
       menu_hint: "/admin/round-employees",
     });
   }
@@ -504,10 +684,41 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
   if (counts.missingDivisionCode > 0) {
     problems.push({
       problem_type: "ผู้ถูกประเมิน",
-      problem_level: "warning",
-      problem_text: `มีผู้ถูกประเมินที่ไม่มี division_code ${counts.missingDivisionCode} คน`,
-      reference_text: "อาจกระทบน้ำหนักแบบแยกกลุ่มภารกิจ",
+      problem_level: "error",
+      problem_text: `มีผู้ถูกประเมินที่ยังไม่มีกลุ่มภารกิจ ${counts.missingDivisionCode.toLocaleString()} คน`,
+      reference_text: "ข้อมูลกลุ่มภารกิจจำเป็นต่อการกำหนดน้ำหนักผู้ประเมิน",
       menu_hint: "/admin/round-employees",
+    });
+  }
+
+  if (counts.missingTenureData > 0) {
+    problems.push({
+      problem_type: "ผู้ถูกประเมิน",
+      problem_level: "error",
+      problem_text: `มีผู้ถูกประเมินที่ไม่สามารถคำนวณอายุงาน ณ วันเริ่มรอบได้ ${counts.missingTenureData.toLocaleString()} คน`,
+      reference_text:
+        "ตรวจสอบว่ามีวันเริ่มปฏิบัติงาน และวันดังกล่าวต้องไม่อยู่หลังวันเริ่มรอบ",
+      menu_hint: "/admin/tenure-rank-groups",
+    });
+  }
+
+  if (counts.invalidGroupSource > 0) {
+    problems.push({
+      problem_type: "ผู้ถูกประเมิน",
+      problem_level: "error",
+      problem_text: `มีผู้ถูกประเมินที่ข้อมูลการจัดกลุ่มระดับไม่สมบูรณ์ ${counts.invalidGroupSource.toLocaleString()} คน`,
+      reference_text: "นำเข้ารายชื่อใหม่เพื่อคำนวณกลุ่มระดับอีกครั้ง",
+      menu_hint: "/admin/round-employees",
+    });
+  }
+
+  if (counts.invalidCompetencyPercent > 0) {
+    problems.push({
+      problem_type: "ผู้ถูกประเมิน",
+      problem_level: "error",
+      problem_text: `มีผู้ถูกประเมินที่สัดส่วน Competency ไม่ถูกต้อง ${counts.invalidCompetencyPercent.toLocaleString()} คน`,
+      reference_text: "ตรวจสอบการตั้งค่าเปอร์เซ็นต์ Competency",
+      menu_hint: "/admin/site-percents",
     });
   }
 
@@ -515,8 +726,8 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
     problems.push({
       problem_type: "ผู้ประเมิน",
       problem_level: "error",
-      problem_text: `ยังไม่มีหัวหน้าใกล้ชิด ${counts.missingLevel1} คน`,
-      reference_text: "evaluator_level = 1",
+      problem_text: `ยังไม่มีหัวหน้าใกล้ชิด ${counts.missingLevel1.toLocaleString()} คน`,
+      reference_text: "ผู้ถูกประเมินทุกคนต้องมีหัวหน้าใกล้ชิด",
       menu_hint: "/admin/assignments",
     });
   }
@@ -525,8 +736,8 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
     problems.push({
       problem_type: "ผู้ประเมิน",
       problem_level: "error",
-      problem_text: `ยังไม่มีหัวหน้าใหญ่ ${counts.missingLevel2} คน`,
-      reference_text: "evaluator_level = 2 เฉพาะผู้ถูกประเมินที่ตั้งค่าให้ต้องมีผู้ประเมิน 2 คน",
+      problem_text: `ยังไม่มีหัวหน้าใหญ่ ${counts.missingLevel2.toLocaleString()} คน`,
+      reference_text: "ตรวจเฉพาะผู้ที่กำหนดให้ต้องมีผู้ประเมินสองระดับ",
       menu_hint: "/admin/assignments",
     });
   }
@@ -535,8 +746,8 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
     problems.push({
       problem_type: "ผู้ประเมิน",
       problem_level: "error",
-      problem_text: `พบรายการผู้ประเมินเป็นคนเดียวกับผู้ถูกประเมิน ${counts.selfAssignment} รายการ`,
-      reference_text: "payroll_no ตรงกัน",
+      problem_text: `พบรายการที่ผู้ประเมินเป็นคนเดียวกับผู้ถูกประเมิน ${counts.selfAssignment.toLocaleString()} รายการ`,
+      reference_text: "เปลี่ยนผู้ประเมินเป็นบุคคลอื่น",
       menu_hint: "/admin/assignments",
     });
   }
@@ -545,8 +756,8 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
     problems.push({
       problem_type: "ผู้ประเมิน",
       problem_level: "error",
-      problem_text: `พบผู้ประเมินที่ไม่พบใน PYREXT หรือพ้นสภาพแล้ว ${counts.inactiveEvaluator} รายการ`,
-      reference_text: "PYREXT.TERMINATEDATE",
+      problem_text: `พบผู้ประเมินที่พ้นสภาพหรือไม่พบข้อมูลบุคลากร ${counts.inactiveEvaluator.toLocaleString()} รายการ`,
+      reference_text: "เลือกผู้ประเมินที่ยังปฏิบัติงานอยู่",
       menu_hint: "/admin/assignments",
     });
   }
@@ -555,9 +766,9 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
     problems.push({
       problem_type: "ผู้ประเมิน",
       problem_level: "error",
-      problem_text: `พบผู้ประเมินที่ RANK ยังไม่ถูก map ${counts.unmappedEvaluatorRank} รายการ`,
-      reference_text: "competency_rank_group_map",
-      menu_hint: "/admin/rank-groups",
+      problem_text: `พบผู้ประเมินที่ยังไม่มีกลุ่มระดับ ${counts.unmappedEvaluatorRank.toLocaleString()} รายการ`,
+      reference_text: "ตรวจสอบระดับข้าราชการหรือช่วงอายุงานของผู้ประเมิน",
+      menu_hint: "/admin/assignments",
     });
   }
 
@@ -565,8 +776,8 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
     problems.push({
       problem_type: "ผู้ประเมิน",
       problem_level: "error",
-      problem_text: `พบผู้ประเมินที่ระดับต่ำกว่าผู้ถูกประเมิน ${counts.lowerRankEvaluator} รายการ`,
-      reference_text: "sort_order ผู้ประเมิน < ผู้ถูกประเมิน",
+      problem_text: `พบผู้ประเมินที่กลุ่มระดับต่ำกว่าผู้ถูกประเมิน ${counts.lowerRankEvaluator.toLocaleString()} รายการ`,
+      reference_text: "ผู้ประเมินต้องอยู่กลุ่มระดับเดียวกันหรือสูงกว่า",
       menu_hint: "/admin/assignments",
     });
   }
@@ -575,24 +786,19 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
     problems.push({
       problem_type: "ผู้ประเมิน",
       problem_level: "error",
-      problem_text: `พบผู้ถูกประเมินที่มีผู้ประเมินระดับเดียวกันซ้ำ ${counts.duplicateAssignmentLevel} คน`,
-      reference_text: "round_employee_id + evaluator_level ซ้ำ",
+      problem_text: `พบผู้ถูกประเมินที่มีผู้ประเมินระดับเดียวกันซ้ำ ${counts.duplicateAssignmentLevel.toLocaleString()} คน`,
+      reference_text: "แต่ละระดับผู้ประเมินกำหนดได้หนึ่งคน",
       menu_hint: "/admin/assignments",
     });
   }
 
   if (counts.missingWeightScope > 0) {
-    missingWeightScopes.forEach((scope) => {
-      const rule = weightRuleMap.get(scope.scope_value);
-      problems.push({
-        problem_type: "น้ำหนักผู้ประเมิน",
-        problem_level: "error",
-        problem_text: `น้ำหนักผู้ประเมินยังไม่ครบ 100% สำหรับ ${scope.scope_label}`,
-        reference_text: rule
-          ? `level 1 ${formatPercent(Number(rule.level1_weight || 0))}, level 2 ${formatPercent(Number(rule.level2_weight || 0))}, รวม ${formatPercent(Number(rule.total_weight || 0))}`
-          : "ยังไม่ได้กำหนดน้ำหนัก",
-        menu_hint: "/admin/evaluator-weights",
-      });
+    problems.push({
+      problem_type: "น้ำหนักผู้ประเมิน",
+      problem_level: "error",
+      problem_text: `มีชุดน้ำหนักผู้ประเมินที่กำหนดไม่ครบ 100% จำนวน ${counts.missingWeightScope.toLocaleString()} ชุด`,
+      reference_text: "น้ำหนักหัวหน้าใกล้ชิดและหัวหน้าใหญ่ต้องรวมเป็น 100%",
+      menu_hint: "/admin/evaluator-weights",
     });
   }
 
@@ -600,51 +806,61 @@ async function getReadinessResult(roundId: number): Promise<ReadinessResult> {
     problems.push({
       problem_type: "หัวข้อประเมิน",
       problem_level: "error",
-      problem_text: `หัวข้อ COMMON ข้อ 1-4 ยังไม่ครบ ${counts.missingCommonQuestion} ข้อ`,
-      reference_text: "question_scope = COMMON",
+      problem_text: `หัวข้อประเมินส่วนกลางข้อ 1-4 ยังไม่ครบ ${counts.missingCommonQuestion.toLocaleString()} ข้อ`,
+      reference_text: "หัวข้อส่วนกลางต้องเปิดใช้งานครบทั้งสี่ข้อ",
       menu_hint: "/admin/questions",
     });
   }
 
-  if (counts.missingProfessionQuestion > 0) {
+  if (counts.partialProfessionSet > 0) {
     problems.push({
-      problem_type: "หัวข้อประเมิน",
+      problem_type: "หัวข้อประเมินตามวิชาชีพ",
       problem_level: "error",
-      problem_text: `หัวข้อ PROFESSION ข้อ 5-7 ยังไม่ครบ ${counts.missingProfessionQuestion} รายการตามวิชาชีพในรอบ`,
-      reference_text: "question_scope = PROFESSION",
-      menu_hint: "/admin/questions",
+      problem_text: `มีวิชาชีพที่กำหนดหัวข้อเพิ่มเติมไม่ครบข้อ 5-7 จำนวน ${counts.partialProfessionSet.toLocaleString()} วิชาชีพ`,
+      reference_text: "วิชาชีพต้องไม่มีหัวข้อเพิ่มเติม หรือกำหนดครบทั้งสามข้อ",
+      menu_hint: "/admin/profession-questions",
+    });
+  }
+
+  if (counts.invalidProfessionTopic > 0) {
+    problems.push({
+      problem_type: "หัวข้อประเมินตามวิชาชีพ",
+      problem_level: "error",
+      problem_text: `มีวิชาชีพที่เลือกหัวข้อเพิ่มเติมซึ่งไม่พร้อมใช้งาน ${counts.invalidProfessionTopic.toLocaleString()} วิชาชีพ`,
+      reference_text: "เลือกเฉพาะหัวข้อตามวิชาชีพที่เปิดใช้งาน",
+      menu_hint: "/admin/profession-questions",
+    });
+  }
+
+  if (counts.duplicateProfessionTopic > 0) {
+    problems.push({
+      problem_type: "หัวข้อประเมินตามวิชาชีพ",
+      problem_level: "error",
+      problem_text: `มีวิชาชีพที่เลือกหัวข้อเพิ่มเติมซ้ำกัน ${counts.duplicateProfessionTopic.toLocaleString()} วิชาชีพ`,
+      reference_text: "หัวข้อข้อ 5, 6 และ 7 ต้องไม่ซ้ำกัน",
+      menu_hint: "/admin/profession-questions",
     });
   }
 
   if (counts.missingDescription > 0) {
     problems.push({
       problem_type: "คำอธิบายหัวข้อ",
-      problem_level: "warning",
-      problem_text: `ยังไม่มีคำอธิบาย current ครบตามหัวข้อและกลุ่มระดับ ${counts.missingDescription} รายการ`,
-      reference_text: "question_no + rank_group_id",
-      menu_hint: "/admin/question-descriptions",
+      problem_level: "error",
+      problem_text: `คำอธิบายหัวข้อยังไม่ครบตามกลุ่มระดับ ${counts.missingDescription.toLocaleString()} รายการ`,
+      reference_text: "เพิ่มคำอธิบายให้ครบจากหน้าหัวข้อประเมิน",
+      menu_hint: "/admin/questions",
     });
   }
 
-  const canOpenRound =
-    Number(round.status_type) === 0 &&
-    counts.totalEmployees > 0 &&
-    counts.missingRankGroup === 0 &&
-    counts.missingLevel1 === 0 &&
-    counts.selfAssignment === 0 &&
-    counts.inactiveEvaluator === 0 &&
-    counts.unmappedEvaluatorRank === 0 &&
-    counts.lowerRankEvaluator === 0 &&
-    counts.duplicateAssignmentLevel === 0 &&
-    counts.missingWeightScope === 0 &&
-    counts.missingCommonQuestion === 0 &&
-    counts.missingProfessionQuestion === 0;
+  const blockingProblemCount = problems.filter(
+    (problem) => problem.problem_level === "error",
+  ).length;
 
   return {
     round,
     counts,
     problems,
-    canOpenRound,
+    canOpenRound: Number(round.status_type) === 0 && blockingProblemCount === 0,
   };
 }
 
@@ -683,7 +899,9 @@ export default async function RoundReadinessPage({
 
   const params = await searchParams;
   const draftRounds = await getDraftRounds();
-  const selectedRoundId = Number(params?.round_id || draftRounds[0]?.round_id || 0);
+  const selectedRoundId = Number(
+    params?.round_id || draftRounds[0]?.round_id || 0,
+  );
   const checkResult = await getReadinessResult(selectedRoundId);
   const counts = checkResult.counts;
 
@@ -691,15 +909,40 @@ export default async function RoundReadinessPage({
     (problem) => problem.problem_level === "error",
   ).length;
 
+  const employeeDataIssueCount =
+    counts.missingRankGroup +
+    counts.missingPositionCode +
+    counts.missingDivisionCode +
+    counts.missingTenureData +
+    counts.invalidGroupSource +
+    counts.invalidCompetencyPercent;
+
+  const evaluatorIssueCount =
+    counts.missingLevel1 +
+    counts.missingLevel2 +
+    counts.selfAssignment +
+    counts.inactiveEvaluator +
+    counts.unmappedEvaluatorRank +
+    counts.lowerRankEvaluator +
+    counts.duplicateAssignmentLevel;
+
+  const professionIssueCount =
+    counts.partialProfessionSet +
+    counts.invalidProfessionTopic +
+    counts.duplicateProfessionTopic;
+
   return (
     <div className="p-4 md:p-6">
       <PageHeader
         title="ตรวจสอบความพร้อมเปิดรอบ"
-        description="ตรวจความพร้อมของรายชื่อผู้ถูกประเมิน ผู้ประเมิน น้ำหนัก หัวข้อประเมิน และคำอธิบายก่อนเปิดรอบจริง"
+        description="ตรวจรายชื่อ ผู้ประเมิน น้ำหนัก และหัวข้อประเมินก่อนเปิดใช้งานรอบจริง"
       />
 
       <ActionAlert
-        type={params?.alert_type as "success" | "error" | "warning" | "info" | undefined}
+        type={
+          params?.alert_type as
+            "success" | "error" | "warning" | "info" | undefined
+        }
         message={params?.alert_message}
       />
 
@@ -766,50 +1009,50 @@ export default async function RoundReadinessPage({
               <SummaryCard
                 title="ผู้ถูกประเมินในรอบ"
                 value={counts.totalEmployees}
-                detail="นับเฉพาะรายการที่ยังไม่ถูกยกเลิก"
+                detail="นับเฉพาะรายชื่อที่ยังอยู่ในรอบ"
                 tone={counts.totalEmployees > 0 ? "green" : "red"}
               />
               <SummaryCard
-                title="ไม่มีผู้ประเมิน level 1"
-                value={counts.missingLevel1}
-                detail="หัวหน้าใกล้ชิดต้องครบทุกคน"
-                tone={counts.missingLevel1 === 0 ? "green" : "red"}
+                title="ข้อมูลผู้ถูกประเมิน"
+                value={employeeDataIssueCount}
+                detail="กลุ่มระดับ วิชาชีพ กลุ่มภารกิจ การคำนวณอายุงาน และเปอร์เซ็นต์"
+                tone={employeeDataIssueCount === 0 ? "green" : "red"}
               />
               <SummaryCard
-                title="ไม่มีผู้ประเมิน level 2"
-                value={counts.missingLevel2}
-                detail="ตรวจเฉพาะคนที่ต้องมีผู้ประเมิน 2 คน"
-                tone={counts.missingLevel2 === 0 ? "green" : "red"}
+                title="ปัญหาผู้ประเมิน"
+                value={evaluatorIssueCount}
+                detail="ตรวจความครบถ้วนและเงื่อนไขระดับผู้ประเมิน"
+                tone={evaluatorIssueCount === 0 ? "green" : "red"}
               />
               <SummaryCard
-                title="น้ำหนักไม่ครบ"
+                title="น้ำหนักผู้ประเมิน"
                 value={counts.missingWeightScope}
-                detail="ตรวจ default และ fallback ตามกลุ่มภารกิจ"
+                detail="ทุกชุดที่กำหนดต้องรวมครบ 100%"
                 tone={counts.missingWeightScope === 0 ? "green" : "red"}
               />
               <SummaryCard
-                title="ไม่มี rank group"
-                value={counts.missingRankGroup}
-                detail="ต้อง map RANK เข้ากลุ่มระดับให้ครบ"
-                tone={counts.missingRankGroup === 0 ? "green" : "red"}
-              />
-              <SummaryCard
-                title="หัวข้อ COMMON ไม่ครบ"
+                title="หัวข้อส่วนกลางไม่ครบ"
                 value={counts.missingCommonQuestion}
-                detail="ข้อ 1-4 ต้องมี current version"
+                detail="หัวข้อข้อ 1-4 ต้องเปิดใช้งานครบ"
                 tone={counts.missingCommonQuestion === 0 ? "green" : "red"}
               />
               <SummaryCard
-                title="หัวข้อ PROFESSION ไม่ครบ"
-                value={counts.missingProfessionQuestion}
-                detail="ข้อ 5-7 ต้องครบตามวิชาชีพในรอบ"
-                tone={counts.missingProfessionQuestion === 0 ? "green" : "red"}
+                title="หัวข้อตามวิชาชีพ"
+                value={professionIssueCount}
+                detail="ต้องไม่มีหัวข้อเพิ่มเติม หรือกำหนดครบข้อ 5-7"
+                tone={professionIssueCount === 0 ? "green" : "red"}
               />
               <SummaryCard
                 title="คำอธิบายยังไม่ครบ"
                 value={counts.missingDescription}
-                detail="ยังเปิดรอบได้ แต่ควรตรวจให้ครบก่อนใช้งานจริง"
-                tone={counts.missingDescription === 0 ? "green" : "orange"}
+                detail="คำอธิบายต้องครบตามหัวข้อและกลุ่มระดับ"
+                tone={counts.missingDescription === 0 ? "green" : "red"}
+              />
+              <SummaryCard
+                title="รายการที่ต้องแก้"
+                value={blockingProblemCount}
+                detail="ต้องแก้ให้เป็นศูนย์ก่อนเปิดรอบ"
+                tone={blockingProblemCount === 0 ? "green" : "red"}
               />
             </div>
           </div>
@@ -821,9 +1064,15 @@ export default async function RoundReadinessPage({
 
             <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
               <DataTable
-                headers={["ประเภท", "ระดับ", "รายละเอียด", "อ้างอิง", "เมนูที่เกี่ยวข้อง"]}
-                searchPlaceholder="ค้นหาประเภท / รายละเอียด / เมนู..."
-                emptyText="ไม่พบปัญหา สามารถไปขั้นตอนเปิดรอบได้"
+                headers={[
+                  "ประเภท",
+                  "ระดับ",
+                  "รายละเอียด",
+                  "ข้อมูลเพิ่มเติม",
+                  "จัดการ",
+                ]}
+                searchPlaceholder="ค้นหาประเภท รายละเอียด หรือเมนู..."
+                emptyText="ไม่พบปัญหา สามารถไปเปิดรอบประเมินได้"
                 initialPageSize={25}
                 filters={[
                   {
@@ -838,9 +1087,16 @@ export default async function RoundReadinessPage({
                   {
                     key: "type",
                     label: "ประเภท",
-                    options: Array.from(new Set(checkResult.problems.map((problem) => problem.problem_type))).map(
-                      (problemType) => ({ value: problemType, label: problemType }),
-                    ),
+                    options: Array.from(
+                      new Set(
+                        checkResult.problems.map(
+                          (problem) => problem.problem_type,
+                        ),
+                      ),
+                    ).map((problemType) => ({
+                      value: problemType,
+                      label: problemType,
+                    })),
                   },
                 ]}
               >
@@ -849,14 +1105,16 @@ export default async function RoundReadinessPage({
                     key={`${problem.problem_type}-${problem.problem_text}-${index}`}
                     data-filter-level={problem.problem_level}
                     data-filter-type={problem.problem_type}
-                    data-search={`${problem.problem_type} ${problem.problem_text} ${problem.reference_text} ${getMenuLabel(problem.menu_hint)} ${problem.menu_hint}`}
+                    data-search={`${problem.problem_type} ${problem.problem_text} ${problem.reference_text} ${getMenuLabel(problem.menu_hint)}`}
                     className="border-t border-gray-100 dark:border-gray-800"
                   >
                     <td className="px-4 py-4 text-sm text-gray-700 dark:text-gray-300">
                       {problem.problem_type}
                     </td>
                     <td className="px-4 py-4 text-sm">
-                      <span className={getProblemBadgeClass(problem.problem_level)}>
+                      <span
+                        className={getProblemBadgeClass(problem.problem_level)}
+                      >
                         {getProblemLevelText(problem.problem_level)}
                       </span>
                     </td>
@@ -869,7 +1127,7 @@ export default async function RoundReadinessPage({
                     <td className="px-4 py-4 text-sm">
                       <Link
                         href={problem.menu_hint}
-                        className="font-medium text-brand-600 hover:underline dark:text-brand-300"
+                        className="inline-flex h-9 items-center justify-center rounded-lg bg-[#1c84c6] px-4 text-sm font-medium text-white hover:bg-[#1a7bb8]"
                       >
                         {getMenuLabel(problem.menu_hint)}
                       </Link>

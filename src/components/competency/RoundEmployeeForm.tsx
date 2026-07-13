@@ -11,7 +11,6 @@ type SelectOption = {
 type ExistingEmployeeRule = {
   round_id: number;
   payroll_no: string;
-  division_code: string;
 };
 
 type RoundEmployeeFormProps = {
@@ -57,26 +56,15 @@ export default function RoundEmployeeForm({
         .map((rule) => String(rule.payroll_no)),
     );
 
-    return employeeOptions.filter((option) => !usedPayrollSet.has(option.value));
+    return employeeOptions.filter(
+      (option) => !usedPayrollSet.has(option.value),
+    );
   }, [employeeOptions, employeeRoundId, existingEmployeeRules]);
 
-  const availableDivisionOptions = useMemo(() => {
-    if (!divisionRoundId) return [];
-
-    const usedDivisionSet = new Set(
-      existingEmployeeRules
-        .filter((rule) => String(rule.round_id) === divisionRoundId)
-        .map((rule) => String(rule.division_code || "").trim())
-        .filter(Boolean),
-    );
-
-    return divisionOptions.filter(
-      (option) => !usedDivisionSet.has(String(option.value || "").trim()),
-    );
-  }, [divisionOptions, divisionRoundId, existingEmployeeRules]);
-
-  const disableEmployeeSubmit = !employeeRoundId || availableEmployeeOptions.length === 0;
-  const disableDivisionSubmit = !divisionRoundId || availableDivisionOptions.length === 0;
+  const disableEmployeeSubmit =
+    !employeeRoundId || availableEmployeeOptions.length === 0;
+  const disableDivisionSubmit =
+    !divisionRoundId || divisionOptions.length === 0;
   const disableAllEmployeeSubmit = !allEmployeeRoundId;
 
   return (
@@ -86,7 +74,10 @@ export default function RoundEmployeeForm({
           นำเข้าทั้งโรงพยาบาล
         </h2>
 
-        <form action={importAllEmployeesAction} className="grid grid-cols-1 gap-4">
+        <form
+          action={importAllEmployeesAction}
+          className="grid grid-cols-1 gap-4"
+        >
           <div>
             <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
               รอบประเมิน
@@ -111,7 +102,11 @@ export default function RoundEmployeeForm({
             <button
               type="submit"
               disabled={disableAllEmployeeSubmit}
-              className={disableAllEmployeeSubmit ? disabledButtonClassName : saveButtonClassName}
+              className={
+                disableAllEmployeeSubmit
+                  ? disabledButtonClassName
+                  : saveButtonClassName
+              }
             >
               นำเข้าทั้งโรงพยาบาล
             </button>
@@ -119,7 +114,7 @@ export default function RoundEmployeeForm({
         </form>
 
         <div className="mt-auto rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-200">
-          นำเข้าเฉพาะเจ้าหน้าที่ที่ยังปฏิบัติงาน มีการ map RANK แล้ว และยังไม่ถูกเพิ่มในรอบที่เลือก
+          ระบบจะเพิ่มเฉพาะเจ้าหน้าที่ที่ข้อมูลพร้อมและยังไม่อยู่ในรอบที่เลือก
         </div>
       </div>
 
@@ -128,7 +123,10 @@ export default function RoundEmployeeForm({
           นำเข้าตามกลุ่มภารกิจ
         </h2>
 
-        <form action={importDivisionEmployeesAction} className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+        <form
+          action={importDivisionEmployeesAction}
+          className="grid grid-cols-1 gap-4 lg:grid-cols-12"
+        >
           <div className="lg:col-span-4">
             <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
               รอบประเมิน
@@ -154,27 +152,27 @@ export default function RoundEmployeeForm({
               กลุ่มภารกิจ
             </label>
             <SearchableSelect
-              key={`division-${divisionRoundId}-${availableDivisionOptions.length}`}
+              key={`division-${divisionRoundId}`}
               name="division_code"
               required
-              placeholder={divisionRoundId ? "เลือกกลุ่มภารกิจ" : "กรุณาเลือกรอบประเมินก่อน"}
-              options={availableDivisionOptions}
+              placeholder={
+                divisionRoundId
+                  ? "เลือกกลุ่มภารกิจ"
+                  : "กรุณาเลือกรอบประเมินก่อน"
+              }
+              options={divisionRoundId ? divisionOptions : []}
             />
           </div>
-
-          {divisionRoundId && availableDivisionOptions.length === 0 && (
-            <div className="lg:col-span-12">
-              <p className="rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs leading-5 text-yellow-800 dark:border-yellow-500/20 dark:bg-yellow-500/10 dark:text-yellow-200">
-                รอบนี้ไม่มีกลุ่มภารกิจให้เพิ่มแล้ว หรือทุกกลุ่มภารกิจมีรายชื่ออยู่ในรอบแล้ว
-              </p>
-            </div>
-          )}
 
           <div className="flex justify-end lg:col-span-12">
             <button
               type="submit"
               disabled={disableDivisionSubmit}
-              className={disableDivisionSubmit ? disabledButtonClassName : saveButtonClassName}
+              className={
+                disableDivisionSubmit
+                  ? disabledButtonClassName
+                  : saveButtonClassName
+              }
             >
               นำเข้าผู้ถูกประเมิน
             </button>
@@ -182,7 +180,7 @@ export default function RoundEmployeeForm({
         </form>
 
         <div className="mt-auto rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-200">
-          ถ้ากลุ่มภารกิจนั้นมีผู้ถูกประเมินอยู่ในรอบแล้วแม้แต่ 1 คน ระบบจะไม่แสดงในตัวเลือกนำเข้าอีก
+          สามารถนำเข้าซ้ำได้ ระบบจะเพิ่มเฉพาะรายชื่อที่ยังไม่อยู่ในรอบ
         </div>
       </div>
 
@@ -191,7 +189,10 @@ export default function RoundEmployeeForm({
           เพิ่มผู้ถูกประเมินรายคน
         </h2>
 
-        <form action={addRoundEmployeeAction} className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+        <form
+          action={addRoundEmployeeAction}
+          className="grid grid-cols-1 gap-4 lg:grid-cols-12"
+        >
           <div className="lg:col-span-4">
             <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
               รอบประเมิน
@@ -220,7 +221,11 @@ export default function RoundEmployeeForm({
               key={`employee-${employeeRoundId}-${availableEmployeeOptions.length}`}
               name="payroll_no"
               required
-              placeholder={employeeRoundId ? "ค้นหาชื่อหรือรหัสเจ้าหน้าที่" : "กรุณาเลือกรอบประเมินก่อน"}
+              placeholder={
+                employeeRoundId
+                  ? "ค้นหาชื่อหรือรหัสเจ้าหน้าที่"
+                  : "กรุณาเลือกรอบประเมินก่อน"
+              }
               options={availableEmployeeOptions}
             />
           </div>
@@ -228,7 +233,7 @@ export default function RoundEmployeeForm({
           {employeeRoundId && availableEmployeeOptions.length === 0 && (
             <div className="lg:col-span-12">
               <p className="rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs leading-5 text-yellow-800 dark:border-yellow-500/20 dark:bg-yellow-500/10 dark:text-yellow-200">
-                รอบนี้ไม่มีเจ้าหน้าที่ให้เพิ่มแล้ว หรือเจ้าหน้าที่ที่ตรงเงื่อนไขถูกเพิ่มเข้ารอบครบแล้ว
+                รอบนี้ไม่มีเจ้าหน้าที่ให้เพิ่มแล้ว
               </p>
             </div>
           )}
@@ -237,7 +242,11 @@ export default function RoundEmployeeForm({
             <button
               type="submit"
               disabled={disableEmployeeSubmit}
-              className={disableEmployeeSubmit ? disabledButtonClassName : saveButtonClassName}
+              className={
+                disableEmployeeSubmit
+                  ? disabledButtonClassName
+                  : saveButtonClassName
+              }
             >
               เพิ่มผู้ถูกประเมิน
             </button>
@@ -246,11 +255,10 @@ export default function RoundEmployeeForm({
 
         <div className="mt-auto pt-4">
           <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-200">
-            แสดงเฉพาะเจ้าหน้าที่ที่ยังปฏิบัติงาน มีการ map RANK แล้ว และยังไม่ถูกเพิ่มในรอบที่เลือก
+            แสดงเฉพาะเจ้าหน้าที่ที่ยังปฏิบัติงานและไม่อยู่ในหน่วยที่ยกเว้นการประเมิน
           </div>
         </div>
       </div>
-
     </div>
   );
 }

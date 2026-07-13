@@ -33,6 +33,13 @@ type EvaluationGroup = {
   totalCount: number;
 };
 
+function shouldUseSecureCookie() {
+  const cookieSecure = process.env.COOKIE_SECURE?.trim().toLowerCase();
+  if (cookieSecure === "true") return true;
+  if (cookieSecure === "false") return false;
+  return process.env.NODE_ENV === "production";
+}
+
 const thaiMonthsShort = [
   "ม.ค.",
   "ก.พ.",
@@ -87,7 +94,7 @@ async function setNoticeCookie(type: "success" | "error", message: string) {
     {
       httpOnly: true,
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
+      secure: shouldUseSecureCookie(),
       maxAge: type === "success" ? 5 : 30,
       path: "/",
     },
@@ -242,21 +249,21 @@ export default async function EvaluationsPage() {
     cookieStore.set(EVALUATION_NOTICE_COOKIE, "", {
       httpOnly: true,
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
+      secure: shouldUseSecureCookie(),
       maxAge: 0,
       path: "/",
     });
     cookieStore.set(EVALUATION_ASSIGNMENT_COOKIE, String(assignmentId), {
       httpOnly: true,
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
+      secure: shouldUseSecureCookie(),
       maxAge: 30 * 60,
       path: "/",
     });
     cookieStore.set(EVALUATION_RETURN_COOKIE, "/evaluations", {
       httpOnly: true,
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
+      secure: shouldUseSecureCookie(),
       maxAge: 30 * 60,
       path: "/",
     });
@@ -268,7 +275,7 @@ export default async function EvaluationsPage() {
         {
           httpOnly: true,
           sameSite: "lax",
-          secure: process.env.NODE_ENV === "production",
+          secure: shouldUseSecureCookie(),
           maxAge: 30 * 60,
           path: "/",
         },

@@ -122,14 +122,18 @@ export default function AssignmentForm({
 
     const usedRoundEmployeeSet = new Set(
       existingAssignmentRules
-        .filter((rule) => Number(rule.assignment_id) !== Number(currentAssignmentId))
+        .filter(
+          (rule) => Number(rule.assignment_id) !== Number(currentAssignmentId),
+        )
         .filter((rule) => String(rule.evaluator_level) === evaluatorLevel)
         .map((rule) => String(rule.round_employee_id)),
     );
 
     return roundEmployeeOptions
       .filter((option) => String(option.round_id) === roundId)
-      .filter((option) => !usedRoundEmployeeSet.has(String(option.round_employee_id)))
+      .filter(
+        (option) => !usedRoundEmployeeSet.has(String(option.round_employee_id)),
+      )
       .map((option) => ({
         value: String(option.round_employee_id),
         label: option.employee_label,
@@ -148,23 +152,29 @@ export default function AssignmentForm({
     );
   }, [roundEmployeeId, roundEmployeeOptions]);
 
-  const selectedRoundEmployeeLabel = selectedRoundEmployee?.employee_label || "-";
+  const selectedRoundEmployeeLabel =
+    selectedRoundEmployee?.employee_label || "-";
 
   const availableEvaluatorOptions = useMemo(() => {
     if (!selectedRoundEmployee) return [];
 
     const usedEvaluatorSet = new Set(
       existingAssignmentRules
-        .filter((rule) => Number(rule.assignment_id) !== Number(currentAssignmentId))
+        .filter(
+          (rule) => Number(rule.assignment_id) !== Number(currentAssignmentId),
+        )
         .filter(
           (rule) =>
-            String(rule.round_employee_id) === String(selectedRoundEmployee.round_employee_id),
+            String(rule.round_employee_id) ===
+            String(selectedRoundEmployee.round_employee_id),
         )
         .map((rule) => String(rule.evaluator_payroll_no)),
     );
 
     return evaluatorOptions
-      .filter((option) => option.payroll_no !== selectedRoundEmployee.payroll_no)
+      .filter(
+        (option) => option.payroll_no !== selectedRoundEmployee.payroll_no,
+      )
       .filter((option) => option.rank_order >= selectedRoundEmployee.rank_order)
       .filter((option) => !usedEvaluatorSet.has(option.payroll_no))
       .map((option) => ({
@@ -216,11 +226,16 @@ export default function AssignmentForm({
   return (
     <div className="mb-6 rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03]">
       <h2 className="mb-2 text-lg font-semibold text-gray-800 dark:text-white/90">
-        {isEditMode ? "แก้ไขผู้ประเมิน" : isPrefillMode ? "เพิ่มผู้ประเมินจากรายการที่ต้องแก้ไข" : "เพิ่มผู้ประเมิน"}
+        {isEditMode
+          ? "แก้ไขผู้ประเมิน"
+          : isPrefillMode
+            ? "เพิ่มผู้ประเมินจากรายการที่ต้องแก้ไข"
+            : "เพิ่มผู้ประเมิน"}
       </h2>
 
       <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
-        เลือกรอบ ผู้ถูกประเมิน และระดับผู้ประเมิน ระบบจะแสดงเฉพาะผู้ประเมินที่มีระดับเท่ากันหรือสูงกว่าผู้ถูกประเมิน
+        เลือกรอบ ผู้ถูกประเมิน และระดับผู้ประเมิน
+        ระบบจะแสดงเฉพาะผู้ประเมินที่มีระดับเท่ากันหรือสูงกว่าผู้ถูกประเมิน
       </p>
 
       {isEditMode && (
@@ -231,7 +246,8 @@ export default function AssignmentForm({
 
       {isPrefillMode && (
         <div className="mb-4 rounded-lg border border-[#23c6c8]/30 bg-[#23c6c8]/10 px-3 py-2 text-xs leading-5 text-[#167d80] dark:text-[#23c6c8]">
-          เปิดจากรายการที่ต้องแก้ไข ระบบล็อกข้อมูลรอบ ผู้ถูกประเมิน และระดับผู้ประเมินไว้แล้ว กรุณาเลือกเฉพาะผู้ประเมินแล้วกดบันทึก
+          เปิดจากรายการที่ต้องแก้ไข ระบบล็อกข้อมูลรอบ ผู้ถูกประเมิน
+          และระดับผู้ประเมินไว้แล้ว กรุณาเลือกเฉพาะผู้ประเมินแล้วกดบันทึก
         </div>
       )}
 
@@ -240,7 +256,11 @@ export default function AssignmentForm({
         className="grid grid-cols-1 gap-4 lg:grid-cols-12"
       >
         {isEditMode && (
-          <input type="hidden" name="assignment_id" value={currentAssignmentId} />
+          <input
+            type="hidden"
+            name="assignment_id"
+            value={currentAssignmentId}
+          />
         )}
 
         <div className="lg:col-span-3">
@@ -280,7 +300,11 @@ export default function AssignmentForm({
 
           {lockContext ? (
             <>
-              <input type="hidden" name="evaluator_level" value={evaluatorLevel} />
+              <input
+                type="hidden"
+                name="evaluator_level"
+                value={evaluatorLevel}
+              />
               <div className="flex h-11 w-full items-center rounded-lg border border-gray-200 bg-gray-50 px-4 py-2.5 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
                 {selectedEvaluatorLevelLabel}
               </div>
@@ -306,7 +330,11 @@ export default function AssignmentForm({
 
           {lockContext ? (
             <>
-              <input type="hidden" name="round_employee_id" value={roundEmployeeId} />
+              <input
+                type="hidden"
+                name="round_employee_id"
+                value={roundEmployeeId}
+              />
               <div className="flex h-11 w-full items-center rounded-lg border border-gray-200 bg-gray-50 px-4 py-2.5 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
                 {selectedRoundEmployeeLabel}
               </div>
@@ -317,20 +345,25 @@ export default function AssignmentForm({
               name="round_employee_id"
               required
               defaultValue={roundEmployeeId}
-              placeholder={roundId ? "ค้นหาผู้ถูกประเมิน" : "กรุณาเลือกรอบประเมินก่อน"}
+              placeholder={
+                roundId ? "ค้นหาผู้ถูกประเมิน" : "กรุณาเลือกรอบประเมินก่อน"
+              }
               options={availableRoundEmployeeOptions}
               onValueChange={handleRoundEmployeeChange}
             />
           )}
         </div>
 
-        {!lockContext && roundId && availableRoundEmployeeOptions.length === 0 && (
-          <div className="lg:col-span-12">
-            <p className="rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs leading-5 text-yellow-800 dark:border-yellow-500/20 dark:bg-yellow-500/10 dark:text-yellow-200">
-              รอบและระดับผู้ประเมินนี้ไม่มีผู้ถูกประเมินให้เพิ่มแล้ว หรือถูกกำหนดผู้ประเมินครบแล้ว
-            </p>
-          </div>
-        )}
+        {!lockContext &&
+          roundId &&
+          availableRoundEmployeeOptions.length === 0 && (
+            <div className="lg:col-span-12">
+              <p className="rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs leading-5 text-yellow-800 dark:border-yellow-500/20 dark:bg-yellow-500/10 dark:text-yellow-200">
+                รอบและระดับผู้ประเมินนี้ไม่มีผู้ถูกประเมินให้เพิ่มแล้ว
+                หรือถูกกำหนดผู้ประเมินครบแล้ว
+              </p>
+            </div>
+          )}
 
         <div className="lg:col-span-12">
           <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
@@ -341,7 +374,11 @@ export default function AssignmentForm({
             name="evaluator_payroll_no"
             required
             defaultValue={evaluatorPayrollNo}
-            placeholder={roundEmployeeId ? "ค้นหาผู้ประเมิน" : "กรุณาเลือกผู้ถูกประเมินก่อน"}
+            placeholder={
+              roundEmployeeId
+                ? "ค้นหาผู้ประเมิน"
+                : "กรุณาเลือกผู้ถูกประเมินก่อน"
+            }
             options={availableEvaluatorOptions}
             onValueChange={(value) => setEvaluatorPayrollNo(value)}
           />
@@ -350,7 +387,8 @@ export default function AssignmentForm({
         {roundEmployeeId && availableEvaluatorOptions.length === 0 && (
           <div className="lg:col-span-12">
             <p className="rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs leading-5 text-yellow-800 dark:border-yellow-500/20 dark:bg-yellow-500/10 dark:text-yellow-200">
-              ไม่พบผู้ประเมินที่มีระดับเท่ากันหรือสูงกว่าผู้ถูกประเมิน หรือผู้ประเมินที่เข้าเงื่อนไขถูกใช้แล้ว
+              ไม่พบผู้ประเมินที่มีระดับเท่ากันหรือสูงกว่าผู้ถูกประเมิน
+              หรือผู้ประเมินที่เข้าเงื่อนไขถูกใช้แล้ว
             </p>
           </div>
         )}
@@ -381,7 +419,9 @@ export default function AssignmentForm({
           <button
             type="submit"
             disabled={disableSubmit}
-            className={disableSubmit ? disabledButtonClassName : saveButtonClassName}
+            className={
+              disableSubmit ? disabledButtonClassName : saveButtonClassName
+            }
           >
             {isEditMode ? "บันทึกการแก้ไข" : "บันทึกผู้ประเมิน"}
           </button>
@@ -389,7 +429,8 @@ export default function AssignmentForm({
       </form>
 
       <p className="mt-4 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-200">
-        หน้านี้แก้ไขได้เฉพาะรอบสถานะร่าง และผู้ประเมินต้องมี sort_order ของกลุ่มระดับเท่ากันหรือสูงกว่าผู้ถูกประเมิน
+        หน้านี้แก้ไขได้เฉพาะรอบสถานะร่าง
+        และระบบจะแสดงเฉพาะผู้ประเมินที่มีกลุ่มระดับเท่ากันหรือสูงกว่าผู้ถูกประเมิน
       </p>
     </div>
   );

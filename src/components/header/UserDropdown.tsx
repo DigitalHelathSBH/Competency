@@ -10,9 +10,16 @@ type CurrentUser = {
   is_admin: boolean;
 };
 
-function getUserPhotoUrl(user: CurrentUser | null) {
-  const empId = String(user?.emp_id || user?.payroll_no || "").trim().toUpperCase();
-  if (!empId) return "/images/user/owner.jpg";
+function getUserPhotoUrl(
+  user: CurrentUser | null,
+  fallbackPhotoUrl: string,
+) {
+  const empId = String(user?.emp_id || user?.payroll_no || "")
+    .trim()
+    .toUpperCase();
+
+  if (!empId) return fallbackPhotoUrl;
+
   return `http://10.0.255.1/pic/${encodeURIComponent(empId)}.jpg`;
 }
 
@@ -21,6 +28,7 @@ export default function UserDropdown() {
   const [isOpen, setIsOpen] = useState(false);
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
+  const fallbackPhotoUrl = `${basePath}/images/user/owner.jpg`;
 
   useEffect(() => {
     fetch(`${basePath}/api/auth/me`)
@@ -29,7 +37,7 @@ export default function UserDropdown() {
         if (data?.user) setUser(data.user);
       })
       .catch(() => undefined);
-  }, []);
+  }, [basePath]);
 
   function toggleDropdown(e: React.MouseEvent<HTMLButtonElement, MouseEvent>) {
     e.stopPropagation();
@@ -47,12 +55,12 @@ export default function UserDropdown() {
       <button onClick={toggleDropdown} className="flex items-center text-gray-700 dark:text-gray-400 dropdown-toggle">
         <span className="mr-3 overflow-hidden rounded-full h-11 w-11 bg-gray-100 dark:bg-gray-800">
           <img
-            src={getUserPhotoUrl(user)}
+            src={getUserPhotoUrl(user, fallbackPhotoUrl)}
             alt={user?.full_name || "User"}
             className="h-11 w-11 object-cover"
             onError={(event) => {
               event.currentTarget.onerror = null;
-              event.currentTarget.src = "/images/user/owner.jpg";
+              event.currentTarget.src = fallbackPhotoUrl;
             }}
           />
         </span>

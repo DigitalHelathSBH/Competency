@@ -4,7 +4,7 @@ import { FormEvent, useState, useTransition } from "react";
 import ActionAlert from "@/components/competency/ActionAlert";
 import SearchableSelect from "@/components/competency/SearchableSelect";
 
- type AlertType = "success" | "error" | "warning" | "info";
+type AlertType = "success" | "error" | "warning" | "info";
 
 type SelectOption = {
   value: string;
@@ -38,6 +38,12 @@ type RoundEmployeeRow = {
   division_name: string | null;
   dept_code: string | null;
   section_code: string | null;
+  site_code: string | null;
+  site_name: string | null;
+  first_employee_date: string | null;
+  service_year: number | null;
+  rank_group_source: string | null;
+  competency_percent: number;
   status_type: number;
 };
 
@@ -61,7 +67,9 @@ type RoundEmployeesTableClientProps = {
   roundOptions: SelectOption[];
   divisionOptions: SelectOption[];
   rankGroupOptions: SelectOption[];
-  loadTableAction: (state: RoundEmployeesTableState) => Promise<RoundEmployeesTableActionResult>;
+  loadTableAction: (
+    state: RoundEmployeesTableState,
+  ) => Promise<RoundEmployeesTableActionResult>;
   toggleStatusAction: (
     roundEmployeeId: number,
     nextStatusType: number,
@@ -132,13 +140,21 @@ export default function RoundEmployeesTableClient({
   const [rows, setRows] = useState(initialRows);
   const [totalRows, setTotalRows] = useState(initialTotalRows);
   const [tableState, setTableState] = useState(initialState);
-  const [alert, setAlert] = useState<{ id: number; type: AlertType; message: string } | null>(null);
-  const [statusTarget, setStatusTarget] = useState<{ row: RoundEmployeeRow; nextStatusType: number } | null>(null);
+  const [alert, setAlert] = useState<{
+    id: number;
+    type: AlertType;
+    message: string;
+  } | null>(null);
+  const [statusTarget, setStatusTarget] = useState<{
+    row: RoundEmployeeRow;
+    nextStatusType: number;
+  } | null>(null);
   const [isPending, startTransition] = useTransition();
 
   const totalPages = Math.max(1, Math.ceil(totalRows / tableState.pageSize));
   const currentPage = normalizePage(tableState.page, totalPages);
-  const startItem = totalRows === 0 ? 0 : (currentPage - 1) * tableState.pageSize + 1;
+  const startItem =
+    totalRows === 0 ? 0 : (currentPage - 1) * tableState.pageSize + 1;
   const endItem = Math.min(currentPage * tableState.pageSize, totalRows);
   const isFirstPage = currentPage <= 1;
   const isLastPage = currentPage >= totalPages;
@@ -195,7 +211,10 @@ export default function RoundEmployeesTableClient({
   }
 
   function requestStatusChange(row: RoundEmployeeRow) {
-    setStatusTarget({ row, nextStatusType: Number(row.status_type) === 9 ? 0 : 9 });
+    setStatusTarget({
+      row,
+      nextStatusType: Number(row.status_type) === 9 ? 0 : 9,
+    });
   }
 
   function confirmStatusChange() {
@@ -205,7 +224,11 @@ export default function RoundEmployeesTableClient({
     setStatusTarget(null);
 
     startTransition(async () => {
-      const result = await toggleStatusAction(row.round_employee_id, nextStatusType, tableState);
+      const result = await toggleStatusAction(
+        row.round_employee_id,
+        nextStatusType,
+        tableState,
+      );
       applyPayload(result.table);
       showAlert(result.type, result.message);
     });
@@ -213,9 +236,14 @@ export default function RoundEmployeesTableClient({
 
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03]">
-      {alert && <ActionAlert key={alert.id} type={alert.type} message={alert.message} />}
+      {alert && (
+        <ActionAlert key={alert.id} type={alert.type} message={alert.message} />
+      )}
 
-      <form onSubmit={handleSearch} className="mb-5 grid grid-cols-1 gap-4 lg:grid-cols-12">
+      <form
+        onSubmit={handleSearch}
+        className="mb-5 grid grid-cols-1 gap-4 lg:grid-cols-12"
+      >
         <div className="lg:col-span-3">
           <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
             ค้นหา
@@ -324,8 +352,20 @@ export default function RoundEmployeesTableClient({
         <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-800">
           <thead className="bg-gray-50 dark:bg-gray-900/40">
             <tr>
-              {["รอบ", "ผู้ถูกประเมิน", "วิชาชีพ", "ระดับ / กลุ่มระดับ", "กลุ่มภารกิจ", "สถานะ", "จัดการ"].map((header) => (
-                <th key={header} className="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+              {[
+                "รอบ",
+                "ผู้ถูกประเมิน",
+                "วิชาชีพ",
+                "ประเภทบุคลากร",
+                "กลุ่มระดับ / Competency",
+                "กลุ่มภารกิจ",
+                "สถานะ",
+                "จัดการ",
+              ].map((header) => (
+                <th
+                  key={header}
+                  className="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400"
+                >
                   {header}
                 </th>
               ))}
@@ -334,7 +374,10 @@ export default function RoundEmployeesTableClient({
           <tbody className="divide-y divide-gray-100 bg-white dark:divide-gray-800 dark:bg-transparent">
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+                <td
+                  colSpan={8}
+                  className="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400"
+                >
                   ยังไม่มีรายชื่อผู้ถูกประเมิน
                 </td>
               </tr>
@@ -344,32 +387,60 @@ export default function RoundEmployeesTableClient({
                 const isCancelled = Number(row.status_type) === 9;
 
                 return (
-                  <tr key={row.round_employee_id} className={isPending ? "opacity-70" : ""}>
+                  <tr
+                    key={row.round_employee_id}
+                    className={isPending ? "opacity-70" : ""}
+                  >
                     <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
-                      <div className="font-medium text-gray-800 dark:text-white/90">{row.round_code}</div>
+                      <div className="font-medium text-gray-800 dark:text-white/90">
+                        {row.round_code}
+                      </div>
                       <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                         {roundStatusText(Number(row.round_status_type))}
                       </div>
                     </td>
 
                     <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
-                      <div className="font-medium text-gray-800 dark:text-white/90">{row.employee_full_name || "-"}</div>
-                      <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">{row.payroll_no}</div>
+                      <div className="font-medium text-gray-800 dark:text-white/90">
+                        {row.employee_full_name || "-"}
+                      </div>
+                      <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        {row.payroll_no}
+                      </div>
                     </td>
 
                     <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
                       <div>{row.position_name || "-"}</div>
-                      <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">{row.position_code || "ไม่ระบุรหัส"}</div>
+                      <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        {row.position_code || "ไม่ระบุรหัส"}
+                      </div>
                     </td>
 
                     <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
-                      <div>{row.rank_name || row.rank_code || "-"}</div>
-                      <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">{row.rank_group_name || "ยังไม่มีกลุ่มระดับ"}</div>
+                      <div>{row.site_name || "ไม่ระบุประเภท"}</div>
+                      <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        {row.rank_group_source === "TENURE"
+                          ? row.service_year === null ||
+                            row.service_year === undefined
+                            ? "ไม่พบข้อมูลอายุงาน"
+                            : `อายุงาน ${Number(row.service_year).toLocaleString()} ปี`
+                          : row.rank_name || row.rank_code || "ไม่ระบุระดับ"}
+                      </div>
+                    </td>
+
+                    <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
+                      <div>{row.rank_group_name || "ยังไม่มีกลุ่มระดับ"}</div>
+                      <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        Competency{" "}
+                        {Number(row.competency_percent || 20).toFixed(0)}%
+                      </div>
                     </td>
 
                     <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
                       <div>{row.division_name || "-"}</div>
-                      <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">{row.division_code || "ไม่ระบุรหัส"}</div>
+                      <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        {row.division_code || "ไม่ระบุรหัส"}
+                      </div>
                     </td>
 
                     <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
@@ -378,13 +449,23 @@ export default function RoundEmployeesTableClient({
 
                     <td className="px-5 py-4 text-sm">
                       {isLocked ? (
-                        <button type="button" disabled className={lockedButtonClass}>ล็อกแล้ว</button>
+                        <button
+                          type="button"
+                          disabled
+                          className={lockedButtonClass}
+                        >
+                          ล็อกแล้ว
+                        </button>
                       ) : (
                         <button
                           type="button"
                           onClick={() => requestStatusChange(row)}
                           disabled={isPending}
-                          className={isCancelled ? greenActionButtonClass : redActionButtonClass}
+                          className={
+                            isCancelled
+                              ? greenActionButtonClass
+                              : redActionButtonClass
+                          }
                         >
                           {isCancelled ? "เปิดใช้งาน" : "ยกเลิก"}
                         </button>
@@ -400,14 +481,32 @@ export default function RoundEmployeesTableClient({
 
       <div className="mt-5 flex flex-col gap-3 border-t border-gray-100 pt-4 dark:border-gray-800 lg:flex-row lg:items-center lg:justify-between">
         <div className="text-sm text-gray-600 dark:text-gray-400">
-          แสดง {startItem.toLocaleString()}-{endItem.toLocaleString()} จาก {totalRows.toLocaleString()} รายการ
+          แสดง {startItem.toLocaleString()}-{endItem.toLocaleString()} จาก{" "}
+          {totalRows.toLocaleString()} รายการ
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" onClick={() => handlePageChange(1)} disabled={isFirstPage || isPending} className={paginationButtonClass}>หน้าแรก</button>
-          <button type="button" onClick={() => handlePageChange(currentPage - 1)} disabled={isFirstPage || isPending} className={paginationButtonClass}>ก่อนหน้า</button>
+          <button
+            type="button"
+            onClick={() => handlePageChange(1)}
+            disabled={isFirstPage || isPending}
+            className={paginationButtonClass}
+          >
+            หน้าแรก
+          </button>
+          <button
+            type="button"
+            onClick={() => handlePageChange(currentPage - 1)}
+            disabled={isFirstPage || isPending}
+            className={paginationButtonClass}
+          >
+            ก่อนหน้า
+          </button>
 
-          <form onSubmit={handlePageInput} className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
+          <form
+            onSubmit={handlePageInput}
+            className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400"
+          >
             <span>หน้า</span>
             <input
               name="page"
@@ -418,11 +517,31 @@ export default function RoundEmployeesTableClient({
               className="h-10 w-20 rounded-lg border border-gray-300 bg-transparent px-3 text-center text-sm text-gray-800 outline-none focus:border-brand-500 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90"
             />
             <span>จาก {totalPages.toLocaleString()}</span>
-            <button type="submit" disabled={isPending} className={paginationButtonClass}>ไป</button>
+            <button
+              type="submit"
+              disabled={isPending}
+              className={paginationButtonClass}
+            >
+              ไป
+            </button>
           </form>
 
-          <button type="button" onClick={() => handlePageChange(currentPage + 1)} disabled={isLastPage || isPending} className={paginationButtonClass}>ถัดไป</button>
-          <button type="button" onClick={() => handlePageChange(totalPages)} disabled={isLastPage || isPending} className={paginationButtonClass}>หน้าสุดท้าย</button>
+          <button
+            type="button"
+            onClick={() => handlePageChange(currentPage + 1)}
+            disabled={isLastPage || isPending}
+            className={paginationButtonClass}
+          >
+            ถัดไป
+          </button>
+          <button
+            type="button"
+            onClick={() => handlePageChange(totalPages)}
+            disabled={isLastPage || isPending}
+            className={paginationButtonClass}
+          >
+            หน้าสุดท้าย
+          </button>
         </div>
       </div>
 
@@ -430,13 +549,20 @@ export default function RoundEmployeesTableClient({
         <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/40 px-4">
           <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl dark:bg-gray-900">
             <div className="flex flex-col items-center text-center">
-              <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-yellow-100 text-2xl font-bold text-yellow-600 dark:bg-yellow-500/15 dark:text-yellow-300">!</div>
-              <h3 className="mb-2 text-xl font-semibold text-gray-800 dark:text-white/90">ยืนยันการปรับสถานะ</h3>
+              <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-yellow-100 text-2xl font-bold text-yellow-600 dark:bg-yellow-500/15 dark:text-yellow-300">
+                !
+              </div>
+              <h3 className="mb-2 text-xl font-semibold text-gray-800 dark:text-white/90">
+                ยืนยันการปรับสถานะ
+              </h3>
               <p className="mb-6 text-sm leading-6 text-gray-600 dark:text-gray-300">
-                ต้องการ{statusTarget.nextStatusType === 9 ? "ยกเลิก" : "เปิดใช้งาน"}ผู้ถูกประเมิน
+                ต้องการ
+                {statusTarget.nextStatusType === 9 ? "ยกเลิก" : "เปิดใช้งาน"}
+                ผู้ถูกประเมิน
                 <br />
                 <span className="font-semibold text-gray-800 dark:text-white/90">
-                  {statusTarget.row.employee_full_name} ({statusTarget.row.payroll_no})
+                  {statusTarget.row.employee_full_name} (
+                  {statusTarget.row.payroll_no})
                 </span>
                 ใช่หรือไม่?
               </p>

@@ -443,8 +443,8 @@ export default function AssignmentsTableClient({
               defaultValue={tableState.status}
               placeholder="สถานะ: มีผู้ประเมินแล้ว"
               options={[
-                { value: "active", label: "มีผู้ประเมินแล้ว" },
-                { value: "inactive", label: "มีรายการยกเลิก" },
+                { value: "active", label: "ใช้งาน" },
+                { value: "inactive", label: "ยกเลิก" },
               ]}
             />
           </div>

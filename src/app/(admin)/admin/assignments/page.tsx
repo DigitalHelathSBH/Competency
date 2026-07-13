@@ -413,6 +413,14 @@ async function getEvaluatorOptions() {
   const pool = await getDbPool();
 
   const result = await pool.request().query(`
+    WITH draft_round AS (
+      SELECT TOP 1
+        round_id,
+        CAST(start_date AS date) AS start_date
+      FROM dbo.competency_round
+      WHERE status_type = 0
+      ORDER BY round_year DESC, round_no DESC, round_id DESC
+    )
     SELECT TOP 3000
       CAST(p.PAYROLLNO AS varchar(20)) AS payroll_no,
       ${ssbDb()}.dbo.GetUserFullName(p.PAYROLLNO) AS evaluator_full_name,
@@ -420,17 +428,81 @@ async function getEvaluatorOptions() {
       pv.PositionName AS position_name,
       NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '') AS rank_code,
       ${ssbDb()}.dbo.GetSSBName(rs.thainame) AS rank_name,
-      rg.rank_group_name,
-      ISNULL(rg.sort_order, 0) AS rank_order,
+      evaluator_group.rank_group_name,
+      ISNULL(evaluator_group.sort_order, 0) AS rank_order,
       NULLIF(LTRIM(RTRIM(CAST(p.[DIVISION] AS varchar(20)))), '') AS division_code,
       ${ssbDb()}.dbo.GetSSBName(ISNULL(ds.thainame, ds.englishname)) AS division_name
     FROM ${ssbDb()}.dbo.PYREXT p
-    JOIN dbo.competency_rank_group_map rgm
-      ON rgm.rank_code = NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '')
-     AND rgm.active_status = 1
-    JOIN dbo.competency_rank_group rg
-      ON rg.rank_group_id = rgm.rank_group_id
-     AND rg.active_status = 1
+    CROSS JOIN draft_round dr
+    OUTER APPLY (
+      SELECT
+        CASE
+          WHEN p.FIRSTEMPLOYEEDATE IS NULL THEN NULL
+          WHEN CAST(p.FIRSTEMPLOYEEDATE AS date) > dr.start_date THEN NULL
+          ELSE
+            DATEDIFF(
+              YEAR,
+              CAST(p.FIRSTEMPLOYEEDATE AS date),
+              dr.start_date
+            )
+            - CASE
+                WHEN DATEADD(
+                  YEAR,
+                  DATEDIFF(
+                    YEAR,
+                    CAST(p.FIRSTEMPLOYEEDATE AS date),
+                    dr.start_date
+                  ),
+                  CAST(p.FIRSTEMPLOYEEDATE AS date)
+                ) > dr.start_date
+                THEN 1
+                ELSE 0
+              END
+        END AS service_year
+    ) service_info
+    OUTER APPLY (
+      SELECT TOP 1
+        mapped_group.rank_group_id,
+        mapped_group.rank_group_name,
+        mapped_group.sort_order
+      FROM (
+        SELECT
+          rg.rank_group_id,
+          rg.rank_group_name,
+          rg.sort_order
+        FROM dbo.competency_rank_group_map rgm
+        JOIN dbo.competency_rank_group rg
+          ON rg.rank_group_id = rgm.rank_group_id
+         AND rg.active_status = 1
+        WHERE NULLIF(LTRIM(RTRIM(CAST(p.SITECODE AS varchar(20)))), '') = '1'
+          AND rgm.active_status = 1
+          AND rgm.rank_code =
+              NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '')
+
+        UNION ALL
+
+        SELECT
+          rg.rank_group_id,
+          rg.rank_group_name,
+          rg.sort_order
+        FROM dbo.competency_tenure_rank_group trg
+        JOIN dbo.competency_rank_group rg
+          ON rg.rank_group_id = trg.rank_group_id
+         AND rg.active_status = 1
+        WHERE ISNULL(
+                NULLIF(LTRIM(RTRIM(CAST(p.SITECODE AS varchar(20)))), ''),
+                ''
+              ) <> '1'
+          AND trg.active_status = 1
+          AND service_info.service_year IS NOT NULL
+          AND service_info.service_year >= trg.min_service_year
+          AND (
+            trg.max_service_year IS NULL
+            OR service_info.service_year < trg.max_service_year
+          )
+      ) mapped_group
+      ORDER BY mapped_group.sort_order, mapped_group.rank_group_id
+    ) evaluator_group
     LEFT JOIN ${ssbDb()}.dbo.PositionView pv
       ON pv.PositionCode = p.POSITIONCODE
     LEFT JOIN ${ssbDb()}.dbo.SYSCONFIG rs
@@ -441,10 +513,111 @@ async function getEvaluatorOptions() {
      AND ds.CTRLCODE = '10028'
     WHERE p.TERMINATEDATE IS NULL
       AND p.PAYROLLNO IS NOT NULL
+      AND evaluator_group.rank_group_id IS NOT NULL
     ORDER BY ${ssbDb()}.dbo.GetUserFullName(p.PAYROLLNO);
   `);
 
   return result.recordset as EvaluatorOptionRow[];
+}
+
+type EvaluatorRankSnapshot = {
+  payroll_no: string;
+  rank_group_id: number;
+  evaluator_rank_order: number;
+};
+
+async function getEvaluatorRankSnapshot(
+  pool: Awaited<ReturnType<typeof getDbPool>>,
+  evaluatorPayrollNo: string,
+  roundId: number,
+): Promise<EvaluatorRankSnapshot | undefined> {
+  const result = await pool
+    .request()
+    .input("round_id", sql.Int, roundId)
+    .input("evaluator_payroll_no", sql.VarChar(20), evaluatorPayrollNo).query(`
+      SELECT TOP 1
+        CAST(p.PAYROLLNO AS varchar(20)) AS payroll_no,
+        evaluator_group.rank_group_id,
+        ISNULL(evaluator_group.sort_order, 0) AS evaluator_rank_order
+      FROM ${ssbDb()}.dbo.PYREXT p
+      JOIN dbo.competency_round r
+        ON r.round_id = @round_id
+      OUTER APPLY (
+        SELECT
+          CASE
+            WHEN p.FIRSTEMPLOYEEDATE IS NULL THEN NULL
+            WHEN CAST(p.FIRSTEMPLOYEEDATE AS date) > CAST(r.start_date AS date)
+              THEN NULL
+            ELSE
+              DATEDIFF(
+                YEAR,
+                CAST(p.FIRSTEMPLOYEEDATE AS date),
+                CAST(r.start_date AS date)
+              )
+              - CASE
+                  WHEN DATEADD(
+                    YEAR,
+                    DATEDIFF(
+                      YEAR,
+                      CAST(p.FIRSTEMPLOYEEDATE AS date),
+                      CAST(r.start_date AS date)
+                    ),
+                    CAST(p.FIRSTEMPLOYEEDATE AS date)
+                  ) > CAST(r.start_date AS date)
+                  THEN 1
+                  ELSE 0
+                END
+          END AS service_year
+      ) service_info
+      OUTER APPLY (
+        SELECT TOP 1
+          mapped_group.rank_group_id,
+          mapped_group.sort_order
+        FROM (
+          SELECT
+            rg.rank_group_id,
+            rg.sort_order
+          FROM dbo.competency_rank_group_map rgm
+          JOIN dbo.competency_rank_group rg
+            ON rg.rank_group_id = rgm.rank_group_id
+           AND rg.active_status = 1
+          WHERE NULLIF(
+                  LTRIM(RTRIM(CAST(p.SITECODE AS varchar(20)))),
+                  ''
+                ) = '1'
+            AND rgm.active_status = 1
+            AND rgm.rank_code =
+                NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '')
+
+          UNION ALL
+
+          SELECT
+            rg.rank_group_id,
+            rg.sort_order
+          FROM dbo.competency_tenure_rank_group trg
+          JOIN dbo.competency_rank_group rg
+            ON rg.rank_group_id = trg.rank_group_id
+           AND rg.active_status = 1
+          WHERE ISNULL(
+                  NULLIF(LTRIM(RTRIM(CAST(p.SITECODE AS varchar(20)))), ''),
+                  ''
+                ) <> '1'
+            AND trg.active_status = 1
+            AND service_info.service_year IS NOT NULL
+            AND service_info.service_year >= trg.min_service_year
+            AND (
+              trg.max_service_year IS NULL
+              OR service_info.service_year < trg.max_service_year
+            )
+        ) mapped_group
+        ORDER BY mapped_group.sort_order, mapped_group.rank_group_id
+      ) evaluator_group
+      WHERE p.TERMINATEDATE IS NULL
+        AND CAST(p.PAYROLLNO AS varchar(20)) = @evaluator_payroll_no
+        AND evaluator_group.rank_group_id IS NOT NULL;
+    `);
+
+  return result.recordset[0] as EvaluatorRankSnapshot | undefined;
 }
 
 async function getExistingAssignmentRules() {
@@ -852,31 +1025,16 @@ async function saveAssignment(formData: FormData) {
     );
   }
 
-  const evaluatorResult = await pool
-    .request()
-    .input("evaluator_payroll_no", sql.VarChar(20), evaluatorPayrollNo).query(`
-      SELECT TOP 1
-        CAST(p.PAYROLLNO AS varchar(20)) AS payroll_no,
-        rg.rank_group_id,
-        ISNULL(rg.sort_order, 0) AS evaluator_rank_order
-      FROM ${ssbDb()}.dbo.PYREXT p
-      JOIN dbo.competency_rank_group_map rgm
-        ON rgm.rank_code = NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '')
-       AND rgm.active_status = 1
-      JOIN dbo.competency_rank_group rg
-        ON rg.rank_group_id = rgm.rank_group_id
-       AND rg.active_status = 1
-      WHERE p.TERMINATEDATE IS NULL
-        AND CAST(p.PAYROLLNO AS varchar(20)) = @evaluator_payroll_no;
-    `);
-
-  const evaluator = evaluatorResult.recordset[0] as
-    { evaluator_rank_order: number } | undefined;
+  const evaluator = await getEvaluatorRankSnapshot(
+    pool,
+    evaluatorPayrollNo,
+    roundId,
+  );
 
   if (!evaluator) {
     redirectWithAlert(
       "error",
-      "ไม่พบผู้ประเมิน หรือผู้ประเมินยังไม่ได้ map RANK เข้ากับกลุ่มระดับ",
+      "ไม่พบผู้ประเมิน หรือยังไม่สามารถจัดกลุ่มระดับของผู้ประเมินได้",
     );
   }
 
@@ -886,7 +1044,7 @@ async function saveAssignment(formData: FormData) {
   ) {
     redirectWithAlert(
       "warning",
-      "ผู้ประเมินต้องมีระดับเท่ากันหรือสูงกว่าผู้ถูกประเมิน",
+      "ผู้ประเมินต้องมีกลุ่มระดับเท่ากันหรือสูงกว่าผู้ถูกประเมิน",
     );
   }
 
@@ -1066,31 +1224,16 @@ async function updateAssignment(formData: FormData) {
     );
   }
 
-  const evaluatorResult = await pool
-    .request()
-    .input("evaluator_payroll_no", sql.VarChar(20), evaluatorPayrollNo).query(`
-      SELECT TOP 1
-        CAST(p.PAYROLLNO AS varchar(20)) AS payroll_no,
-        rg.rank_group_id,
-        ISNULL(rg.sort_order, 0) AS evaluator_rank_order
-      FROM ${ssbDb()}.dbo.PYREXT p
-      JOIN dbo.competency_rank_group_map rgm
-        ON rgm.rank_code = NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '')
-       AND rgm.active_status = 1
-      JOIN dbo.competency_rank_group rg
-        ON rg.rank_group_id = rgm.rank_group_id
-       AND rg.active_status = 1
-      WHERE p.TERMINATEDATE IS NULL
-        AND CAST(p.PAYROLLNO AS varchar(20)) = @evaluator_payroll_no;
-    `);
-
-  const evaluator = evaluatorResult.recordset[0] as
-    { evaluator_rank_order: number } | undefined;
+  const evaluator = await getEvaluatorRankSnapshot(
+    pool,
+    evaluatorPayrollNo,
+    roundId,
+  );
 
   if (!evaluator) {
     redirectWithAlert(
       "error",
-      "ไม่พบผู้ประเมิน หรือผู้ประเมินยังไม่ได้ map RANK เข้ากับกลุ่มระดับ",
+      "ไม่พบผู้ประเมิน หรือยังไม่สามารถจัดกลุ่มระดับของผู้ประเมินได้",
     );
   }
 
@@ -1100,7 +1243,7 @@ async function updateAssignment(formData: FormData) {
   ) {
     redirectWithAlert(
       "warning",
-      "ผู้ประเมินต้องมีระดับเท่ากันหรือสูงกว่าผู้ถูกประเมิน",
+      "ผู้ประเมินต้องมีกลุ่มระดับเท่ากันหรือสูงกว่าผู้ถูกประเมิน",
     );
   }
 
@@ -1430,30 +1573,16 @@ async function bulkAssignDivision(formData: FormData) {
     );
   }
 
-  const evaluatorResult = await pool
-    .request()
-    .input("evaluator_payroll_no", sql.VarChar(20), evaluatorPayrollNo).query(`
-      SELECT TOP 1
-        CAST(p.PAYROLLNO AS varchar(20)) AS payroll_no,
-        ISNULL(rg.sort_order, 0) AS evaluator_rank_order
-      FROM ${ssbDb()}.dbo.PYREXT p
-      JOIN dbo.competency_rank_group_map rgm
-        ON rgm.rank_code = NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '')
-       AND rgm.active_status = 1
-      JOIN dbo.competency_rank_group rg
-        ON rg.rank_group_id = rgm.rank_group_id
-       AND rg.active_status = 1
-      WHERE p.TERMINATEDATE IS NULL
-        AND CAST(p.PAYROLLNO AS varchar(20)) = @evaluator_payroll_no;
-    `);
-
-  const evaluator = evaluatorResult.recordset[0] as
-    { evaluator_rank_order: number } | undefined;
+  const evaluator = await getEvaluatorRankSnapshot(
+    pool,
+    evaluatorPayrollNo,
+    roundId,
+  );
 
   if (!evaluator) {
     redirectWithAlert(
       "error",
-      "ไม่พบผู้ประเมิน หรือผู้ประเมินยังไม่ได้ map RANK เข้ากับกลุ่มระดับ",
+      "ไม่พบผู้ประเมิน หรือยังไม่สามารถจัดกลุ่มระดับของผู้ประเมินได้",
     );
   }
 
@@ -1904,7 +2033,7 @@ export default async function AssignmentsPage({
     payroll_no: row.payroll_no,
     rank_order: row.rank_order,
     division_code: String(row.division_code || "").trim(),
-    employee_label: `${row.employee_full_name} (${row.payroll_no}) • ${row.rank_name || row.rank_group_name || "ไม่ระบุระดับ"} • ${row.division_name || row.division_code || "ไม่ระบุกลุ่มงาน"}`,
+    employee_label: `${row.employee_full_name} (${row.payroll_no}) • ${row.rank_group_name || row.rank_name || "ไม่ระบุกลุ่มระดับ"} • ${row.division_name || row.division_code || "ไม่ระบุกลุ่มงาน"}`,
   }));
 
   const roundEmployeeDivisionOptions = Array.from(
@@ -1930,7 +2059,7 @@ export default async function AssignmentsPage({
     payroll_no: row.payroll_no,
     rank_order: row.rank_order,
     division_code: String(row.division_code || "").trim(),
-    evaluator_label: `${row.evaluator_full_name} (${row.payroll_no}) • ${row.rank_name || row.rank_group_name || "ไม่ระบุระดับ"} • ${row.division_name || row.division_code || "ไม่ระบุกลุ่มงาน"}`,
+    evaluator_label: `${row.evaluator_full_name} (${row.payroll_no}) • ${row.rank_group_name || row.rank_name || "ไม่ระบุกลุ่มระดับ"} • ${row.division_name || row.division_code || "ไม่ระบุกลุ่มงาน"}`,
   }));
 
   const prefillRoundEmployee = assignmentPrefillFromCookie

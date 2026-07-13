@@ -115,6 +115,7 @@ function groupRowsByDivision(rows: CompetencyReportRow[]) {
 
 export default async function ReportsPage() {
   const session = await requireSession();
+  const isAdmin = Boolean(session.is_admin);
 
   const cookieStore = await cookies();
   const selectedRoundId = Number(
@@ -125,7 +126,7 @@ export default async function ReportsPage() {
     () =>
       getWeightedReport(
         selectedRoundId > 0 ? selectedRoundId : null,
-        session.emp_id,
+        isAdmin ? null : session.emp_id,
       ),
     {
       rounds: [],
@@ -148,8 +149,14 @@ export default async function ReportsPage() {
   return (
     <>
       <PageHeader
-        title="รายงานผลคนที่ฉันประเมิน"
-        description="แสดงผลประเมินเฉพาะผู้ถูกประเมินที่อยู่ในความรับผิดชอบของคุณ"
+        title={
+          isAdmin ? "รายงานผลการประเมิน" : "รายงานผลคนที่ฉันประเมิน"
+        }
+        description={
+          isAdmin
+            ? "แสดงผลประเมินของผู้ถูกประเมินทั้งหมดในแต่ละรอบ"
+            : "แสดงผลประเมินเฉพาะผู้ถูกประเมินที่อยู่ในความรับผิดชอบของคุณ"
+        }
       />
 
       <div className="mb-5 rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03]">
@@ -167,7 +174,11 @@ export default async function ReportsPage() {
               className="h-11 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm text-gray-800 shadow-theme-xs focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90"
             >
               {report.rounds.length === 0 ? (
-                <option value="">ยังไม่มีรอบประเมินที่คุณมีรายการประเมิน</option>
+                <option value="">
+                  {isAdmin
+                    ? "ยังไม่มีรอบประเมินที่เปิดหรือปิดแล้ว"
+                    : "ยังไม่มีรอบประเมินที่คุณมีรายการประเมิน"}
+                </option>
               ) : (
                 report.rounds.map((round) => (
                   <option key={round.round_id} value={round.round_id}>
@@ -207,12 +218,12 @@ export default async function ReportsPage() {
           valueClassName="text-[#f8ac59]"
         />
         <SummaryCard
-          title="ปัญหาน้ำหนักคะแนน"
+          title="ปัญหาน้ำหนักผู้ประเมิน"
           value={report.summary.weight_issue_count.toLocaleString("th-TH")}
           valueClassName="text-[#ed5565]"
         />
         <SummaryCard
-          title="คะแนนดิบเฉลี่ย"
+          title="คะแนนรวมเฉลี่ย"
           value={formatScore(report.summary.average_final_score)}
         />
         <SummaryCard
@@ -245,7 +256,7 @@ export default async function ReportsPage() {
                   น้ำหนักไม่ครบ
                 </th>
                 <th className="px-5 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400">
-                  คะแนนดิบเฉลี่ย
+                  คะแนนรวมเฉลี่ย
                 </th>
                 <th className="px-5 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400">
                   คะแนน Competency เฉลี่ย
@@ -339,7 +350,7 @@ export default async function ReportsPage() {
                         น้ำหนัก
                       </th>
                       <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400">
-                        คะแนนดิบ
+                        คะแนนรวม
                       </th>
                       <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400">
                         Competency
@@ -391,7 +402,11 @@ export default async function ReportsPage() {
                           {formatPercent(row.level2_weight)}
                         </td>
                         <td className="px-4 py-3 text-right text-sm font-semibold text-gray-800 dark:text-white/90">
-                          <div>{formatScore(row.final_score)}</div>
+                          <div>
+                            {row.report_status === "ประเมินครบ"
+                              ? formatScore(row.final_score)
+                              : "-"}
+                          </div>
                           <div className="mt-0.5 text-xs font-normal text-gray-500 dark:text-gray-400">
                             เต็ม {formatScore(row.max_possible_score)}
                           </div>
@@ -400,7 +415,9 @@ export default async function ReportsPage() {
                           {formatPercent(row.competency_percent)}
                         </td>
                         <td className="px-4 py-3 text-right text-sm font-semibold text-[#1ab394]">
-                          {formatScore(row.competency_score)}
+                          {row.report_status === "ประเมินครบ"
+                            ? formatScore(row.competency_score)
+                            : "-"}
                         </td>
                         <td className="px-4 py-3 text-center">
                           <span

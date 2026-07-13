@@ -38,6 +38,7 @@ export type EvaluationQuestion = {
   question_title: string;
   description_text: string | null;
   max_score: number;
+  weight_percent: number;
   score: number | null;
   comment_text: string | null;
 };
@@ -173,7 +174,16 @@ export async function getMyAssignments(
       FROM dbo.competency_evaluator_assignment a
       JOIN dbo.competency_round_employee re ON re.round_employee_id = a.round_employee_id
       JOIN dbo.competency_round r ON r.round_id = re.round_id
-      LEFT JOIN dbo.competency_evaluation ev ON ev.assignment_id = a.assignment_id
+      OUTER APPLY (
+          SELECT TOP 1
+              ev2.evaluation_id,
+              ev2.status_type,
+              ev2.total_score,
+              ev2.submitted_date
+          FROM dbo.competency_evaluation ev2
+          WHERE ev2.assignment_id = a.assignment_id
+          ORDER BY ev2.evaluation_id DESC
+      ) ev
       LEFT JOIN ${ssbDb()}.dbo.sectioncode sectioncode
           ON re.section_code = sectioncode.Code
       WHERE a.evaluator_payroll_no = @emp_id
@@ -303,6 +313,7 @@ export async function getEvaluationFormData(
           qv.question_title,
           qdv.description_text,
           crq.max_score,
+          crq.weight_percent,
           ed.score,
           ed.comment_text
       FROM dbo.competency_evaluator_assignment a
@@ -310,16 +321,19 @@ export async function getEvaluationFormData(
       JOIN dbo.competency_round_question crq
           ON crq.round_id = re.round_id
          AND crq.active_status = 1
-         AND (crq.position_code IS NULL OR crq.position_code = re.position_code)
+         AND crq.position_code = re.position_code
       JOIN dbo.competency_question_version qv
           ON qv.question_version_id = crq.question_version_id
       LEFT JOIN dbo.competency_question_description_version qdv
-          ON qdv.question_no = crq.question_no
+          ON qdv.question_version_id = crq.question_version_id
          AND qdv.rank_group_id = re.rank_group_id
-         AND qdv.is_current = 1
          AND qdv.active_status = 1
-      LEFT JOIN dbo.competency_evaluation ev
-          ON ev.assignment_id = a.assignment_id
+      OUTER APPLY (
+          SELECT TOP 1 ev2.evaluation_id
+          FROM dbo.competency_evaluation ev2
+          WHERE ev2.assignment_id = a.assignment_id
+          ORDER BY ev2.evaluation_id DESC
+      ) ev
       LEFT JOIN dbo.competency_evaluation_detail ed
           ON ed.evaluation_id = ev.evaluation_id
          AND ed.round_question_id = crq.round_question_id
@@ -365,6 +379,7 @@ export async function getEvaluationScoreTemplates(
       JOIN dbo.competency_round_employee re2
           ON re2.round_employee_id = a2.round_employee_id
          AND re2.round_id = current_re.round_id
+         AND re2.position_code = current_re.position_code
          AND re2.status_type <> 9
       JOIN dbo.competency_evaluation ev
           ON ev.assignment_id = a2.assignment_id
@@ -461,6 +476,98 @@ export async function saveEvaluation(
         "รอบประเมินยังไม่เปิด หรือถูกปิดแล้ว ไม่สามารถบันทึกผลประเมินได้",
       );
 
+    const allowedQuestionResult = await new sql.Request(transaction)
+      .input("assignment_id", sql.Int, assignmentId)
+      .input("emp_id", sql.VarChar(20), empId).query(`
+        SELECT
+          crq.round_question_id,
+          crq.max_score,
+          crq.weight_percent
+        FROM dbo.competency_evaluator_assignment a
+        JOIN dbo.competency_round_employee re
+          ON re.round_employee_id = a.round_employee_id
+        JOIN dbo.competency_round_question crq
+          ON crq.round_id = re.round_id
+         AND crq.position_code = re.position_code
+         AND crq.active_status = 1
+        WHERE a.assignment_id = @assignment_id
+          AND a.evaluator_payroll_no = @emp_id
+          AND a.status_type <> 9
+          AND re.status_type <> 9;
+      `);
+
+    const allowedQuestionMap = new Map<
+      number,
+      { max_score: number; weight_percent: number }
+    >();
+
+    for (const row of allowedQuestionResult.recordset as Array<{
+      round_question_id: number;
+      max_score: number;
+      weight_percent: number;
+    }>) {
+      allowedQuestionMap.set(Number(row.round_question_id), {
+        max_score: Number(row.max_score),
+        weight_percent: Number(row.weight_percent),
+      });
+    }
+
+    if (allowedQuestionMap.size === 0) {
+      throw new Error("ไม่พบหัวข้อประเมินสำหรับผู้ถูกประเมินรายนี้");
+    }
+
+    const totalQuestionWeight = Array.from(allowedQuestionMap.values()).reduce(
+      (total, question) => total + Number(question.weight_percent || 0),
+      0,
+    );
+
+    if (
+      ![4, 7].includes(allowedQuestionMap.size) ||
+      Math.abs(totalQuestionWeight - 100) > 0.01
+    ) {
+      throw new Error(
+        "ชุดหัวข้อประเมินยังไม่สมบูรณ์ กรุณาแจ้งผู้ดูแลระบบตรวจสอบรอบประเมิน",
+      );
+    }
+
+    const submittedQuestionIds = new Set<number>();
+
+    for (const detail of details) {
+      const questionId = Number(detail.round_question_id);
+      const question = allowedQuestionMap.get(questionId);
+
+      if (!question) {
+        throw new Error("พบหัวข้อประเมินที่ไม่อยู่ในชุดคำถามของรายการนี้");
+      }
+
+      if (submittedQuestionIds.has(questionId)) {
+        throw new Error("พบหัวข้อประเมินซ้ำ");
+      }
+      submittedQuestionIds.add(questionId);
+
+      if (detail.score !== null) {
+        const score = Number(detail.score);
+        if (
+          !Number.isFinite(score) ||
+          score < 0 ||
+          score > question.max_score
+        ) {
+          throw new Error("คะแนนที่ระบุไม่อยู่ในช่วงที่อนุญาต");
+        }
+      }
+    }
+
+    if (actionType === "submit") {
+      for (const questionId of allowedQuestionMap.keys()) {
+        const detail = details.find(
+          (item) => Number(item.round_question_id) === questionId,
+        );
+        if (!detail || detail.score === null) {
+          throw new Error("กรุณาให้คะแนนทุกหัวข้อก่อนส่งผลประเมิน");
+        }
+      }
+    }
+
     const statusType = actionType === "submit" ? 1 : 0;
 
     const evaluationRequest = new sql.Request(transaction);
@@ -471,7 +578,8 @@ export async function saveEvaluation(
     ).query(`
         SELECT TOP 1 evaluation_id, status_type
         FROM dbo.competency_evaluation
-        WHERE assignment_id = @assignment_id;
+        WHERE assignment_id = @assignment_id
+        ORDER BY evaluation_id DESC;
       `);
 
     let evaluationId: number;
@@ -547,9 +655,22 @@ export async function saveEvaluation(
         SET total_score = score_sum.total_score
         FROM dbo.competency_evaluation ev
         CROSS APPLY (
-            SELECT CAST(SUM(ISNULL(score, 0)) AS decimal(6,2)) AS total_score
-            FROM dbo.competency_evaluation_detail
-            WHERE evaluation_id = ev.evaluation_id
+          SELECT
+            CAST(
+              SUM(
+                CASE
+                  WHEN crq.max_score > 0
+                  THEN ISNULL(ed.score, 0) * crq.weight_percent / crq.max_score
+                  ELSE 0
+                END
+              )
+              AS decimal(6,2)
+            ) AS total_score
+          FROM dbo.competency_evaluation_detail ed
+          JOIN dbo.competency_round_question crq
+            ON crq.round_question_id = ed.round_question_id
+           AND crq.active_status = 1
+          WHERE ed.evaluation_id = ev.evaluation_id
         ) score_sum
         WHERE ev.evaluation_id = @evaluation_id;
       `);
@@ -681,9 +802,12 @@ export async function getAdminTableRows(
   const allowedTables = new Set([
     "competency_rank_group",
     "competency_rank_group_map",
+    "competency_tenure_rank_group",
+    "competency_site_percent",
     "competency_question",
     "competency_question_version",
     "competency_question_description_version",
+    "competency_profession_question_map",
     "competency_round_employee",
     "competency_evaluator_assignment",
     "competency_evaluator_weight",
@@ -798,8 +922,7 @@ export async function getWeightedReport(
 
   const roundsResult = await pool
     .request()
-    .input("evaluator_payroll_no", sql.VarChar(20), evaluatorFilter)
-    .query(`
+    .input("evaluator_payroll_no", sql.VarChar(20), evaluatorFilter).query(`
     SELECT
         round_id,
         round_year,
@@ -920,7 +1043,7 @@ export async function getWeightedReport(
                   )
               END AS weight_total,
               max_score_total.max_possible_score,
-              CAST(ISNULL(rank_percent.competency_percent, 30) AS decimal(5,2)) AS competency_percent,
+              CAST(ISNULL(re.competency_percent, 20) AS decimal(5,2)) AS competency_percent,
               CAST(
                   CASE
                       WHEN ISNULL(re.evaluator_required_type, 2) = 1
@@ -943,7 +1066,7 @@ export async function getWeightedReport(
                                       ISNULL(level1.score, 0) * ISNULL(ISNULL(level1_weight.weight_percent, default_level1_weight.weight_percent), 0) / 100.0 +
                                       ISNULL(level2.score, 0) * ISNULL(ISNULL(level2_weight.weight_percent, default_level2_weight.weight_percent), 0) / 100.0
                               END
-                          ) * ISNULL(rank_percent.competency_percent, 30) / max_score_total.max_possible_score
+                          ) * ISNULL(re.competency_percent, 20) / 100.0
                   END
                   AS decimal(8,2)
               ) AS competency_score,
@@ -953,22 +1076,12 @@ export async function getWeightedReport(
           JOIN dbo.competency_round r
               ON r.round_id = re.round_id
           OUTER APPLY (
-              SELECT TOP 1
-                  CAST(ISNULL(m.competency_percent, 30) AS decimal(5,2)) AS competency_percent
-              FROM dbo.competency_rank_group_map m
-              WHERE m.rank_code = re.rank_code
-                AND m.active_status = 1
-              ORDER BY
-                  CASE WHEN m.rank_group_id = re.rank_group_id THEN 0 ELSE 1 END,
-                  m.rank_group_map_id DESC
-          ) rank_percent
-          OUTER APPLY (
               SELECT
-                  CAST(SUM(CAST(crq.max_score AS decimal(8,2))) AS decimal(8,2)) AS max_possible_score
+                  CAST(SUM(CAST(crq.weight_percent AS decimal(8,2))) AS decimal(8,2)) AS max_possible_score
               FROM dbo.competency_round_question crq
               WHERE crq.round_id = re.round_id
                 AND crq.active_status = 1
-                AND (crq.position_code IS NULL OR crq.position_code = re.position_code)
+                AND crq.position_code = re.position_code
           ) max_score_total
           OUTER APPLY (
               SELECT TOP 1

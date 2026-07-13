@@ -2,13 +2,16 @@ import Image from "next/image";
 import React from "react";
 
 export default function GridShape() {
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
+  const gridImagePath = `${basePath}/images/shape/grid-01.svg`;
+
   return (
     <>
       <div className="absolute right-0 top-0 -z-1 w-full max-w-[250px] xl:max-w-[450px]">
         <Image
           width={540}
           height={254}
-          src="/images/shape/grid-01.svg"
+          src={gridImagePath}
           alt="grid"
         />
       </div>
@@ -16,7 +19,7 @@ export default function GridShape() {
         <Image
           width={540}
           height={254}
-          src="/images/shape/grid-01.svg"
+          src={gridImagePath}
           alt="grid"
         />
       </div>

@@ -26,14 +26,7 @@ type EmployeeOptionRow = {
   full_name: string;
   position_code: string | null;
   position_name: string | null;
-  rank_code: string | null;
-  rank_name: string | null;
-  rank_group_id: number | null;
-  rank_group_name: string | null;
-  division_code: string | null;
-  division_name: string | null;
-  dept_code: string | null;
-  section_code: string | null;
+  site_name: string | null;
 };
 
 type RoundEmployeeRow = {
@@ -53,19 +46,51 @@ type RoundEmployeeRow = {
   division_name: string | null;
   dept_code: string | null;
   section_code: string | null;
+  site_code: string | null;
+  site_name: string | null;
+  first_employee_date: string | null;
+  service_year: number | null;
+  rank_group_source: string | null;
+  competency_percent: number;
   status_type: number;
 };
-
 
 type ExistingEmployeeRuleRow = {
   round_id: number;
   payroll_no: string;
-  division_code: string | null;
 };
 
 type RankGroupOptionRow = {
   rank_group_id: number;
   rank_group_name: string;
+};
+
+type EmployeeSnapshotRow = {
+  payroll_no: string;
+  position_code: string | null;
+  rank_code: string | null;
+  rank_group_id: number | null;
+  division_code: string | null;
+  dept_code: string | null;
+  section_code: string | null;
+  site_code: string | null;
+  first_employee_date: Date | string | null;
+  round_start_date: Date | string | null;
+  service_year: number | null;
+  rank_group_source: "RANK" | "TENURE";
+  is_start_after_round: number;
+  competency_percent: number;
+  is_section_excluded: number;
+};
+
+type ImportSummaryRow = {
+  available_count: number;
+  inserted_count: number;
+  skipped_missing_position: number;
+  skipped_missing_division: number;
+  skipped_missing_start_date: number;
+  skipped_start_after_round: number;
+  skipped_missing_rank_group: number;
 };
 
 type RoundEmployeesTableState = {
@@ -96,7 +121,6 @@ type RoundEmployeesTableActionResult = {
   table: RoundEmployeesTablePayload;
 };
 
-
 const ROUND_EMPLOYEES_TABLE_COOKIE = "competency_round_employees_table";
 
 const DEFAULT_TABLE_STATE: RoundEmployeesTableState = {
@@ -121,8 +145,9 @@ function ssbDb() {
   return quoteSqlName(getSsbDatabaseName());
 }
 
-
-function normalizeTableState(value: Partial<RoundEmployeesTableState> | null | undefined) {
+function normalizeTableState(
+  value: Partial<RoundEmployeesTableState> | null | undefined,
+) {
   const pageSize = [25, 50, 100].includes(Number(value?.pageSize))
     ? Number(value?.pageSize)
     : DEFAULT_TABLE_STATE.pageSize;
@@ -130,7 +155,9 @@ function normalizeTableState(value: Partial<RoundEmployeesTableState> | null | u
   return {
     page: Math.max(1, Number(value?.page || DEFAULT_TABLE_STATE.page)),
     pageSize,
-    search: String(value?.search || "").trim().slice(0, 100),
+    search: String(value?.search || "")
+      .trim()
+      .slice(0, 100),
     roundId: String(value?.roundId || "").trim(),
     divisionCode: String(value?.divisionCode || "").trim(),
     rankGroupId: String(value?.rankGroupId || "").trim(),
@@ -142,9 +169,7 @@ async function getRoundEmployeesTableState() {
   const cookieStore = await cookies();
   const rawValue = cookieStore.get(ROUND_EMPLOYEES_TABLE_COOKIE)?.value;
 
-  if (!rawValue) {
-    return DEFAULT_TABLE_STATE;
-  }
+  if (!rawValue) return DEFAULT_TABLE_STATE;
 
   try {
     return normalizeTableState(JSON.parse(rawValue));
@@ -183,25 +208,147 @@ function roundStatusText(statusType: number) {
   return `สถานะ ${statusType}`;
 }
 
+function employeeResolutionCte(additionalWhere = "") {
+  return `
+    WITH employee_base_raw AS (
+      SELECT
+        CAST(p.PAYROLLNO AS varchar(20)) AS payroll_no,
+        NULLIF(LTRIM(RTRIM(CAST(p.POSITIONCODE AS varchar(20)))), '') AS position_code,
+        NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '') AS rank_code,
+        NULLIF(LTRIM(RTRIM(CAST(p.[DIVISION] AS varchar(20)))), '') AS division_code,
+        NULLIF(LTRIM(RTRIM(CAST(p.[DEPT] AS varchar(20)))), '') AS dept_code,
+        NULLIF(LTRIM(RTRIM(CAST(p.[SECTION] AS varchar(20)))), '') AS section_code,
+        NULLIF(LTRIM(RTRIM(CAST(p.SITECODE AS varchar(20)))), '') AS site_code,
+        TRY_CONVERT(date, p.FIRSTEMPLOYEEDATE) AS first_employee_date,
+        r.start_date,
+        ROW_NUMBER() OVER (
+          PARTITION BY CAST(p.PAYROLLNO AS varchar(20))
+          ORDER BY CAST(p.PAYROLLNO AS varchar(20))
+        ) AS row_no
+      FROM ${ssbDb()}.dbo.PYREXT p
+      JOIN dbo.competency_round r
+        ON r.round_id = @round_id
+      WHERE p.TERMINATEDATE IS NULL
+        AND p.PAYROLLNO IS NOT NULL
+        ${additionalWhere}
+    ),
+    employee_base AS (
+      SELECT
+        payroll_no,
+        position_code,
+        rank_code,
+        division_code,
+        dept_code,
+        section_code,
+        site_code,
+        first_employee_date,
+        start_date
+      FROM employee_base_raw
+      WHERE row_no = 1
+    ),
+    employee_calc AS (
+      SELECT
+        b.*,
+        CASE
+          WHEN b.first_employee_date IS NULL
+            OR b.first_employee_date > b.start_date
+          THEN NULL
+          ELSE
+            DATEDIFF(YEAR, b.first_employee_date, b.start_date)
+            - CASE
+                WHEN DATEADD(
+                  YEAR,
+                  DATEDIFF(YEAR, b.first_employee_date, b.start_date),
+                  b.first_employee_date
+                ) > b.start_date
+                THEN 1
+                ELSE 0
+              END
+        END AS service_year,
+        CASE WHEN ISNULL(b.site_code, '') = '1' THEN 'RANK' ELSE 'TENURE' END AS rank_group_source
+      FROM employee_base b
+    ),
+    employee_resolved AS (
+      SELECT
+        c.payroll_no,
+        c.position_code,
+        c.rank_code,
+        c.division_code,
+        c.dept_code,
+        c.section_code,
+        c.site_code,
+        c.first_employee_date,
+        c.start_date AS round_start_date,
+        c.service_year,
+        c.rank_group_source,
+        CASE
+          WHEN c.first_employee_date IS NOT NULL
+            AND c.first_employee_date > c.start_date
+          THEN 1
+          ELSE 0
+        END AS is_start_after_round,
+        CASE
+          WHEN c.rank_group_source = 'RANK' THEN rank_map.rank_group_id
+          ELSE tenure_map.rank_group_id
+        END AS rank_group_id,
+        CAST(ISNULL(site_percent.competency_percent, 20) AS decimal(5,2)) AS competency_percent,
+        CASE
+          WHEN EXISTS (
+            SELECT 1
+            FROM dbo.competency_excluded_section x
+            WHERE x.active_status = 1
+              AND LTRIM(RTRIM(CAST(x.section_code AS varchar(20)))) = ISNULL(c.section_code, '')
+          )
+          THEN 1
+          ELSE 0
+        END AS is_section_excluded
+      FROM employee_calc c
+      OUTER APPLY (
+        SELECT TOP 1 rg.rank_group_id
+        FROM dbo.competency_rank_group_map rgm
+        JOIN dbo.competency_rank_group rg
+          ON rg.rank_group_id = rgm.rank_group_id
+         AND rg.active_status = 1
+        WHERE rgm.active_status = 1
+          AND rgm.rank_code = c.rank_code
+        ORDER BY rgm.rank_group_map_id DESC
+      ) rank_map
+      OUTER APPLY (
+        SELECT TOP 1 rg.rank_group_id
+        FROM dbo.competency_tenure_rank_group trg
+        JOIN dbo.competency_rank_group rg
+          ON rg.rank_group_id = trg.rank_group_id
+         AND rg.active_status = 1
+        WHERE trg.active_status = 1
+          AND c.service_year IS NOT NULL
+          AND c.service_year >= trg.min_service_year
+          AND (trg.max_service_year IS NULL OR c.service_year < trg.max_service_year)
+        ORDER BY trg.min_service_year DESC, trg.tenure_rank_group_id DESC
+      ) tenure_map
+      OUTER APPLY (
+        SELECT TOP 1 sp.competency_percent
+        FROM dbo.competency_site_percent sp
+        WHERE sp.active_status = 1
+          AND sp.site_code = c.site_code
+        ORDER BY sp.site_percent_id DESC
+      ) site_percent
+    )
+  `;
+}
+
 async function getRounds() {
   const pool = await getDbPool();
-
   const result = await pool.request().query(`
-    SELECT
-      round_id,
-      round_code,
-      status_type
+    SELECT round_id, round_code, status_type
     FROM dbo.competency_round
     WHERE status_type <> 9
     ORDER BY round_year DESC, round_no DESC, round_id DESC;
   `);
-
   return result.recordset as RoundRow[];
 }
 
 async function getDivisions() {
   const pool = await getDbPool();
-
   const result = await pool.request().query(`
     SELECT
       LTRIM(RTRIM(CAST(s.code AS varchar(20)))) AS division_code,
@@ -217,42 +364,24 @@ async function getDivisions() {
       )
     ORDER BY division_name;
   `);
-
   return result.recordset as DivisionRow[];
 }
 
 async function getEmployeeOptions() {
   const pool = await getDbPool();
-
   const result = await pool.request().query(`
     SELECT TOP 3000
       CAST(p.PAYROLLNO AS varchar(20)) AS payroll_no,
       ${ssbDb()}.dbo.GetUserFullName(p.PAYROLLNO) AS full_name,
       NULLIF(LTRIM(RTRIM(CAST(p.POSITIONCODE AS varchar(20)))), '') AS position_code,
       pv.PositionName AS position_name,
-      NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '') AS rank_code,
-      ${ssbDb()}.dbo.GetSSBName(rs.thainame) AS rank_name,
-      rg.rank_group_id,
-      rg.rank_group_name,
-      NULLIF(LTRIM(RTRIM(CAST(p.[DIVISION] AS varchar(20)))), '') AS division_code,
-      ${ssbDb()}.dbo.GetSSBName(ISNULL(ds.thainame, ds.englishname)) AS division_name,
-      NULLIF(LTRIM(RTRIM(CAST(p.[DEPT] AS varchar(20)))), '') AS dept_code,
-      NULLIF(LTRIM(RTRIM(CAST(p.[SECTION] AS varchar(20)))), '') AS section_code
+      ${ssbDb()}.dbo.GetSSBName(ISNULL(site.thainame, site.englishname)) AS site_name
     FROM ${ssbDb()}.dbo.PYREXT p
-    JOIN dbo.competency_rank_group_map rgm
-      ON rgm.rank_code = NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '')
-     AND rgm.active_status = 1
-    JOIN dbo.competency_rank_group rg
-      ON rg.rank_group_id = rgm.rank_group_id
-     AND rg.active_status = 1
     LEFT JOIN ${ssbDb()}.dbo.PositionView pv
       ON pv.PositionCode = p.POSITIONCODE
-    LEFT JOIN ${ssbDb()}.dbo.SYSCONFIG rs
-      ON rs.CODE = p.[RANK]
-     AND rs.CTRLCODE = '60010'
-    LEFT JOIN ${ssbDb()}.dbo.SYSCONFIG ds
-      ON ds.CODE = p.[DIVISION]
-     AND ds.CTRLCODE = '10028'
+    LEFT JOIN ${ssbDb()}.dbo.SYSCONFIG site
+      ON site.CODE = p.SITECODE
+     AND site.CTRLCODE = '60048'
     WHERE p.TERMINATEDATE IS NULL
       AND p.PAYROLLNO IS NOT NULL
       AND NOT EXISTS (
@@ -263,36 +392,26 @@ async function getEmployeeOptions() {
       )
     ORDER BY ${ssbDb()}.dbo.GetUserFullName(p.PAYROLLNO);
   `);
-
   return result.recordset as EmployeeOptionRow[];
 }
 
 async function getExistingEmployeeRules() {
   const pool = await getDbPool();
-
   const result = await pool.request().query(`
-    SELECT
-      round_id,
-      payroll_no,
-      division_code
+    SELECT round_id, payroll_no
     FROM dbo.competency_round_employee;
   `);
-
   return result.recordset as ExistingEmployeeRuleRow[];
 }
 
 async function getRankGroupOptions() {
   const pool = await getDbPool();
-
   const result = await pool.request().query(`
-    SELECT
-      rank_group_id,
-      rank_group_name
+    SELECT rank_group_id, rank_group_name
     FROM dbo.competency_rank_group
     WHERE active_status = 1
     ORDER BY sort_order, rank_group_name;
   `);
-
   return result.recordset as RankGroupOptionRow[];
 }
 
@@ -310,6 +429,7 @@ function buildRoundEmployeeWhereClause(state: RoundEmployeesTableState) {
         OR ISNULL(re.rank_code, '') LIKE @search_like
         OR ISNULL(rg.rank_group_name, '') LIKE @search_like
         OR ISNULL(${ssbDb()}.dbo.GetSSBName(ISNULL(ds.thainame, ds.englishname)), '') LIKE @search_like
+        OR ISNULL(${ssbDb()}.dbo.GetSSBName(ISNULL(ss.thainame, ss.englishname)), '') LIKE @search_like
         OR ISNULL(re.division_code, '') LIKE @search_like
         OR ISNULL(re.dept_code, '') LIKE @search_like
         OR ISNULL(re.section_code, '') LIKE @search_like
@@ -317,46 +437,39 @@ function buildRoundEmployeeWhereClause(state: RoundEmployeesTableState) {
     `);
   }
 
-  if (state.roundId) {
-    whereParts.push("re.round_id = @filter_round_id");
-  }
-
+  if (state.roundId) whereParts.push("re.round_id = @filter_round_id");
   if (state.divisionCode) {
-    whereParts.push("LTRIM(RTRIM(ISNULL(re.division_code, ''))) = @filter_division_code");
+    whereParts.push(
+      "LTRIM(RTRIM(ISNULL(re.division_code, ''))) = @filter_division_code",
+    );
   }
-
   if (state.rankGroupId) {
     whereParts.push("re.rank_group_id = @filter_rank_group_id");
   }
-
-  if (state.status) {
-    whereParts.push("re.status_type = @filter_status");
-  }
+  if (state.status) whereParts.push("re.status_type = @filter_status");
 
   return whereParts.join(" AND ");
 }
 
-function applyRoundEmployeeTableInputs(request: any, state: RoundEmployeesTableState) {
+function applyRoundEmployeeTableInputs(
+  request: any,
+  state: RoundEmployeesTableState,
+) {
   if (state.search) {
     request.input("search_like", sql.NVarChar(150), `%${state.search}%`);
   }
-
   if (state.roundId) {
     request.input("filter_round_id", sql.Int, Number(state.roundId));
   }
-
   if (state.divisionCode) {
     request.input("filter_division_code", sql.VarChar(20), state.divisionCode);
   }
-
   if (state.rankGroupId) {
     request.input("filter_rank_group_id", sql.Int, Number(state.rankGroupId));
   }
-
   if (state.status) {
     request.input("filter_status", sql.Int, Number(state.status));
   }
-
   return request;
 }
 
@@ -377,6 +490,9 @@ async function getRoundEmployeesPage(state: RoundEmployeesTableState) {
     LEFT JOIN ${ssbDb()}.dbo.SYSCONFIG ds
       ON ds.CODE = re.division_code
      AND ds.CTRLCODE = '10028'
+    LEFT JOIN ${ssbDb()}.dbo.SYSCONFIG ss
+      ON ss.CODE = re.site_code
+     AND ss.CTRLCODE = '60048'
     WHERE ${whereClause}
   `;
 
@@ -413,6 +529,12 @@ async function getRoundEmployeesPage(state: RoundEmployeesTableState) {
       ${ssbDb()}.dbo.GetSSBName(ISNULL(ds.thainame, ds.englishname)) AS division_name,
       re.dept_code,
       re.section_code,
+      re.site_code,
+      ${ssbDb()}.dbo.GetSSBName(ISNULL(ss.thainame, ss.englishname)) AS site_name,
+      CONVERT(varchar(10), re.first_employee_date, 120) AS first_employee_date,
+      re.service_year,
+      re.rank_group_source,
+      re.competency_percent,
       re.status_type
     ${baseFrom}
     ORDER BY r.round_year DESC, r.round_no DESC, re.division_code, re.payroll_no
@@ -428,10 +550,7 @@ async function getRoundEmployeesPage(state: RoundEmployeesTableState) {
 
 async function getRoundDraftInfo(roundId: number) {
   const pool = await getDbPool();
-
-  const result = await pool
-    .request()
-    .input("round_id", sql.Int, roundId)
+  const result = await pool.request().input("round_id", sql.Int, roundId)
     .query(`
       SELECT TOP 1 round_id, round_code, status_type
       FROM dbo.competency_round
@@ -439,72 +558,214 @@ async function getRoundDraftInfo(roundId: number) {
     `);
 
   const round = result.recordset[0] as RoundRow | undefined;
-
-  if (!round) {
-    redirectWithAlert("error", "ไม่พบรอบประเมินที่เลือก");
-  }
-
+  if (!round) redirectWithAlert("error", "ไม่พบรอบประเมินที่เลือก");
   if (Number(round.status_type) !== 0) {
     redirectWithAlert(
       "error",
       `รอบ ${round.round_code} อยู่สถานะ ${roundStatusText(Number(round.status_type))} ไม่สามารถแก้ไขผู้ถูกประเมินได้`,
     );
   }
-
   return round;
 }
 
-async function getEmployeeSnapshot(payrollNo: string) {
+async function getEmployeeSnapshot(payrollNo: string, roundId: number) {
   const pool = await getDbPool();
-
   const result = await pool
     .request()
-    .input("payroll_no", sql.VarChar(20), payrollNo)
-    .query(`
-      SELECT TOP 1
-        CAST(p.PAYROLLNO AS varchar(20)) AS payroll_no,
-        NULLIF(LTRIM(RTRIM(CAST(p.POSITIONCODE AS varchar(20)))), '') AS position_code,
-        NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '') AS rank_code,
-        rg.rank_group_id,
-        NULLIF(LTRIM(RTRIM(CAST(p.[DIVISION] AS varchar(20)))), '') AS division_code,
-        NULLIF(LTRIM(RTRIM(CAST(p.[DEPT] AS varchar(20)))), '') AS dept_code,
-        NULLIF(LTRIM(RTRIM(CAST(p.[SECTION] AS varchar(20)))), '') AS section_code,
-        CASE WHEN x.excluded_section_id IS NULL THEN 0 ELSE 1 END AS is_section_excluded
-      FROM ${ssbDb()}.dbo.PYREXT p
-      JOIN dbo.competency_rank_group_map rgm
-        ON rgm.rank_code = NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '')
-       AND rgm.active_status = 1
-      JOIN dbo.competency_rank_group rg
-        ON rg.rank_group_id = rgm.rank_group_id
-       AND rg.active_status = 1
-      LEFT JOIN dbo.competency_excluded_section x
-        ON x.active_status = 1
-       AND LTRIM(RTRIM(CAST(x.section_code AS varchar(20)))) = LTRIM(RTRIM(CAST(p.[SECTION] AS varchar(20))))
-      WHERE p.TERMINATEDATE IS NULL
-        AND CAST(p.PAYROLLNO AS varchar(20)) = @payroll_no;
+    .input("round_id", sql.Int, roundId)
+    .input("payroll_no", sql.VarChar(20), payrollNo).query(`
+      ${employeeResolutionCte(
+        "AND CAST(p.PAYROLLNO AS varchar(20)) = @payroll_no",
+      )}
+      SELECT TOP 1 *
+      FROM employee_resolved;
     `);
 
-  return result.recordset[0] as
-    | {
-        payroll_no: string;
-        position_code: string | null;
-        rank_code: string | null;
-        rank_group_id: number;
-        division_code: string | null;
-        dept_code: string | null;
-        section_code: string | null;
-        is_section_excluded: number;
-      }
-    | undefined;
+  return result.recordset[0] as EmployeeSnapshotRow | undefined;
 }
 
+function validateEmployeeSnapshot(employee: EmployeeSnapshotRow) {
+  if (Number(employee.is_section_excluded || 0) === 1) {
+    return "เจ้าหน้าที่คนนี้อยู่ในหน่วยที่ยกเว้นการประเมิน";
+  }
+  if (!employee.position_code) {
+    return "ไม่พบข้อมูลวิชาชีพของเจ้าหน้าที่คนนี้";
+  }
+  if (!employee.division_code) {
+    return "ไม่พบข้อมูลกลุ่มภารกิจของเจ้าหน้าที่คนนี้";
+  }
+  if (
+    employee.rank_group_source === "TENURE" &&
+    employee.first_employee_date === null
+  ) {
+    return "ไม่พบวันที่เริ่มปฏิบัติงานของเจ้าหน้าที่คนนี้";
+  }
+  if (
+    employee.rank_group_source === "TENURE" &&
+    Number(employee.is_start_after_round || 0) === 1
+  ) {
+    return "เจ้าหน้าที่คนนี้เริ่มปฏิบัติงานหลังวันเริ่มรอบ จึงยังไม่สามารถนำเข้ารอบนี้ได้";
+  }
+  if (
+    employee.rank_group_source === "TENURE" &&
+    employee.service_year === null
+  ) {
+    return "ไม่สามารถคำนวณอายุงาน ณ วันเริ่มรอบของเจ้าหน้าที่คนนี้ได้";
+  }
+  if (!employee.rank_group_id) {
+    return employee.rank_group_source === "RANK"
+      ? "ยังไม่ได้กำหนดกลุ่มระดับสำหรับระดับของเจ้าหน้าที่คนนี้"
+      : "ยังไม่ได้กำหนดช่วงอายุงานที่ครอบคลุมเจ้าหน้าที่คนนี้";
+  }
+  return null;
+}
+
+async function importEmployees(
+  roundId: number,
+  divisionCode: string | null,
+): Promise<ImportSummaryRow> {
+  const pool = await getDbPool();
+  const request = pool.request().input("round_id", sql.Int, roundId);
+  const additionalWhere = divisionCode
+    ? "AND LTRIM(RTRIM(CAST(p.[DIVISION] AS varchar(20)))) = @division_code"
+    : "";
+
+  if (divisionCode) {
+    request.input("division_code", sql.VarChar(20), divisionCode);
+  }
+
+  const result = await request.query(`
+    ${employeeResolutionCte(additionalWhere)}
+
+    SELECT
+      r.*,
+      CASE
+        WHEN r.position_code IS NULL THEN 'MISSING_POSITION'
+        WHEN r.division_code IS NULL THEN 'MISSING_DIVISION'
+        WHEN r.rank_group_source = 'TENURE'
+          AND r.first_employee_date IS NULL
+          THEN 'MISSING_START_DATE'
+        WHEN r.rank_group_source = 'TENURE'
+          AND r.is_start_after_round = 1
+          THEN 'START_AFTER_ROUND'
+        WHEN r.rank_group_source = 'TENURE'
+          AND r.service_year IS NULL
+          THEN 'MISSING_START_DATE'
+        WHEN r.rank_group_id IS NULL THEN 'MISSING_RANK_GROUP'
+        ELSE 'READY'
+      END AS issue_code
+    INTO #resolved_employee
+    FROM employee_resolved r
+    WHERE r.is_section_excluded = 0
+      AND NOT EXISTS (
+        SELECT 1
+        FROM dbo.competency_round_employee re
+        WHERE re.round_id = @round_id
+          AND re.payroll_no = r.payroll_no
+      );
+
+    DECLARE @inserted TABLE (round_employee_id int NOT NULL);
+
+    INSERT INTO dbo.competency_round_employee
+      (
+        round_id,
+        payroll_no,
+        position_code,
+        rank_code,
+        rank_group_id,
+        division_code,
+        dept_code,
+        section_code,
+        site_code,
+        first_employee_date,
+        service_year,
+        rank_group_source,
+        competency_percent,
+        status_type
+      )
+    OUTPUT inserted.round_employee_id INTO @inserted(round_employee_id)
+    SELECT
+      @round_id,
+      payroll_no,
+      position_code,
+      rank_code,
+      rank_group_id,
+      division_code,
+      dept_code,
+      section_code,
+      site_code,
+      first_employee_date,
+      service_year,
+      rank_group_source,
+      competency_percent,
+      0
+    FROM #resolved_employee
+    WHERE issue_code = 'READY';
+
+    SELECT
+      COUNT(*) AS available_count,
+      (SELECT COUNT(*) FROM @inserted) AS inserted_count,
+      SUM(CASE WHEN issue_code = 'MISSING_POSITION' THEN 1 ELSE 0 END) AS skipped_missing_position,
+      SUM(CASE WHEN issue_code = 'MISSING_DIVISION' THEN 1 ELSE 0 END) AS skipped_missing_division,
+      SUM(CASE WHEN issue_code = 'MISSING_START_DATE' THEN 1 ELSE 0 END) AS skipped_missing_start_date,
+      SUM(CASE WHEN issue_code = 'START_AFTER_ROUND' THEN 1 ELSE 0 END) AS skipped_start_after_round,
+      SUM(CASE WHEN issue_code = 'MISSING_RANK_GROUP' THEN 1 ELSE 0 END) AS skipped_missing_rank_group
+    FROM #resolved_employee;
+
+    DROP TABLE #resolved_employee;
+  `);
+
+  const row = result.recordset[0] || {};
+  return {
+    available_count: Number(row.available_count || 0),
+    inserted_count: Number(row.inserted_count || 0),
+    skipped_missing_position: Number(row.skipped_missing_position || 0),
+    skipped_missing_division: Number(row.skipped_missing_division || 0),
+    skipped_missing_start_date: Number(row.skipped_missing_start_date || 0),
+    skipped_start_after_round: Number(row.skipped_start_after_round || 0),
+    skipped_missing_rank_group: Number(row.skipped_missing_rank_group || 0),
+  };
+}
+
+function buildImportMessage(summary: ImportSummaryRow) {
+  const skipped = summary.available_count - summary.inserted_count;
+  const reasons: string[] = [];
+
+  if (summary.skipped_missing_position > 0) {
+    reasons.push(`ไม่พบวิชาชีพ ${summary.skipped_missing_position} คน`);
+  }
+  if (summary.skipped_missing_division > 0) {
+    reasons.push(`ไม่พบกลุ่มภารกิจ ${summary.skipped_missing_division} คน`);
+  }
+  if (summary.skipped_missing_start_date > 0) {
+    reasons.push(
+      `ไม่พบวันที่เริ่มปฏิบัติงาน ${summary.skipped_missing_start_date} คน`,
+    );
+  }
+  if (summary.skipped_start_after_round > 0) {
+    reasons.push(
+      `เริ่มปฏิบัติงานหลังวันเริ่มรอบ ${summary.skipped_start_after_round} คน`,
+    );
+  }
+  if (summary.skipped_missing_rank_group > 0) {
+    reasons.push(`ยังไม่มีกลุ่มระดับ ${summary.skipped_missing_rank_group} คน`);
+  }
+
+  return {
+    skipped,
+    detail: reasons.join(", "),
+  };
+}
 
 async function getRoundEmployeesTablePayload(
   inputState: Partial<RoundEmployeesTableState> | RoundEmployeesTableState,
 ): Promise<RoundEmployeesTablePayload> {
   const state = normalizeTableState(inputState);
   const pageResult = await getRoundEmployeesPage(state);
-  const totalPages = Math.max(1, Math.ceil(pageResult.totalRows / state.pageSize));
+  const totalPages = Math.max(
+    1,
+    Math.ceil(pageResult.totalRows / state.pageSize),
+  );
   const safePage = Math.min(state.page, totalPages);
   const safeState = { ...state, page: safePage };
 
@@ -521,17 +782,9 @@ async function loadRoundEmployeesTableClient(
   inputState: RoundEmployeesTableState,
 ): Promise<RoundEmployeesTableActionResult> {
   "use server";
-
   await requireAdminSession();
-
   const table = await getRoundEmployeesTablePayload(inputState);
-
-  return {
-    ok: true,
-    type: "info",
-    message: "",
-    table,
-  };
+  return { ok: true, type: "info", message: "", table };
 }
 
 async function toggleRoundEmployeeStatusClient(
@@ -540,11 +793,9 @@ async function toggleRoundEmployeeStatusClient(
   inputState: RoundEmployeesTableState,
 ): Promise<RoundEmployeesTableActionResult> {
   "use server";
-
   await requireAdminSession();
 
   const tableBefore = await getRoundEmployeesTablePayload(inputState);
-
   if (!roundEmployeeId) {
     return {
       ok: false,
@@ -555,19 +806,16 @@ async function toggleRoundEmployeeStatusClient(
   }
 
   const pool = await getDbPool();
-
   const checkResult = await pool
     .request()
-    .input("round_employee_id", sql.Int, roundEmployeeId)
-    .query(`
+    .input("round_employee_id", sql.Int, roundEmployeeId).query(`
       SELECT TOP 1
         re.round_employee_id,
         re.status_type,
         r.round_code,
         r.status_type AS round_status_type
       FROM dbo.competency_round_employee re
-      JOIN dbo.competency_round r
-        ON r.round_id = re.round_id
+      JOIN dbo.competency_round r ON r.round_id = re.round_id
       WHERE re.round_employee_id = @round_employee_id;
     `);
 
@@ -599,25 +847,25 @@ async function toggleRoundEmployeeStatusClient(
   }
 
   const statusType = Number(nextStatusType) === 9 ? 9 : 0;
-
   await pool
     .request()
     .input("round_employee_id", sql.Int, roundEmployeeId)
-    .input("status_type", sql.Int, statusType)
-    .query(`
+    .input("status_type", sql.Int, statusType).query(`
       UPDATE dbo.competency_round_employee
       SET status_type = @status_type
       WHERE round_employee_id = @round_employee_id;
     `);
 
   revalidatePath("/admin/round-employees");
-
   const table = await getRoundEmployeesTablePayload(inputState);
 
   return {
     ok: true,
     type: "success",
-    message: statusType === 9 ? "ยกเลิกผู้ถูกประเมินเรียบร้อยแล้ว" : "เปิดใช้งานผู้ถูกประเมินเรียบร้อยแล้ว",
+    message:
+      statusType === 9
+        ? "ยกเลิกผู้ถูกประเมินเรียบร้อยแล้ว"
+        : "เปิดใช้งานผู้ถูกประเมินเรียบร้อยแล้ว",
     table,
   };
 }
@@ -626,51 +874,36 @@ export default async function RoundEmployeesPage({
   searchParams,
 }: RoundEmployeesPageProps) {
   await requireAdminSession();
-
   const alertParams = await searchParams;
 
   async function addRoundEmployee(formData: FormData) {
     "use server";
-
     await requireAdminSession();
 
     const roundId = Number(formData.get("round_id") || 0);
     const payrollNo = String(formData.get("payroll_no") || "").trim();
 
-    if (!roundId) {
-      redirectWithAlert("error", "กรุณาเลือกรอบประเมิน");
-    }
-
-    if (!payrollNo) {
-      redirectWithAlert("error", "กรุณาเลือกผู้ถูกประเมิน");
-    }
+    if (!roundId) redirectWithAlert("error", "กรุณาเลือกรอบประเมิน");
+    if (!payrollNo) redirectWithAlert("error", "กรุณาเลือกผู้ถูกประเมิน");
 
     await getRoundDraftInfo(roundId);
-
-    const employee = await getEmployeeSnapshot(payrollNo);
+    const employee = await getEmployeeSnapshot(payrollNo, roundId);
 
     if (!employee) {
-      redirectWithAlert(
-        "error",
-        "ไม่พบข้อมูลเจ้าหน้าที่ หรือยังไม่ได้ map ระดับเข้ากับกลุ่มระดับการถูกประเมิน",
-      );
+      redirectWithAlert("error", "ไม่พบข้อมูลเจ้าหน้าที่ที่เลือก");
     }
 
-    if (Number(employee.is_section_excluded || 0) === 1) {
-      redirectWithAlert(
-        "warning",
-        "เจ้าหน้าที่คนนี้อยู่ในหน่วยเบิกที่ตั้งค่าไม่ต้องประเมิน จึงไม่สามารถเพิ่มเข้ารอบได้",
-      );
+    const validationMessage = validateEmployeeSnapshot(employee);
+    if (validationMessage) {
+      redirectWithAlert("warning", validationMessage);
     }
 
     const pool = await getDbPool();
-
     const duplicateResult = await pool
       .request()
       .input("round_id", sql.Int, roundId)
-      .input("payroll_no", sql.VarChar(20), employee.payroll_no)
-      .query(`
-        SELECT TOP 1 round_employee_id, status_type
+      .input("payroll_no", sql.VarChar(20), employee.payroll_no).query(`
+        SELECT TOP 1 round_employee_id
         FROM dbo.competency_round_employee
         WHERE round_id = @round_id
           AND payroll_no = @payroll_no;
@@ -679,7 +912,7 @@ export default async function RoundEmployeesPage({
     if (duplicateResult.recordset.length > 0) {
       redirectWithAlert(
         "warning",
-        "เจ้าหน้าที่คนนี้ถูกเพิ่มเข้ารอบประเมินนี้แล้ว ถ้าถูกยกเลิกให้เปิดใช้งานกลับจากตารางด้านล่าง",
+        "เจ้าหน้าที่คนนี้อยู่ในรอบประเมินแล้ว หากถูกยกเลิกให้เปิดใช้งานจากตารางด้านล่าง",
       );
     }
 
@@ -693,11 +926,49 @@ export default async function RoundEmployeesPage({
       .input("division_code", sql.VarChar(20), employee.division_code)
       .input("dept_code", sql.VarChar(20), employee.dept_code)
       .input("section_code", sql.VarChar(20), employee.section_code)
-      .query(`
+      .input("site_code", sql.VarChar(20), employee.site_code)
+      .input("first_employee_date", sql.Date, employee.first_employee_date)
+      .input("service_year", sql.Int, employee.service_year)
+      .input("rank_group_source", sql.VarChar(10), employee.rank_group_source)
+      .input(
+        "competency_percent",
+        sql.Decimal(5, 2),
+        employee.competency_percent,
+      ).query(`
         INSERT INTO dbo.competency_round_employee
-          (round_id, payroll_no, position_code, rank_code, rank_group_id, division_code, dept_code, section_code, status_type)
+          (
+            round_id,
+            payroll_no,
+            position_code,
+            rank_code,
+            rank_group_id,
+            division_code,
+            dept_code,
+            section_code,
+            site_code,
+            first_employee_date,
+            service_year,
+            rank_group_source,
+            competency_percent,
+            status_type
+          )
         VALUES
-          (@round_id, @payroll_no, @position_code, @rank_code, @rank_group_id, @division_code, @dept_code, @section_code, 0);
+          (
+            @round_id,
+            @payroll_no,
+            @position_code,
+            @rank_code,
+            @rank_group_id,
+            @division_code,
+            @dept_code,
+            @section_code,
+            @site_code,
+            @first_employee_date,
+            @service_year,
+            @rank_group_source,
+            @competency_percent,
+            0
+          );
       `);
 
     revalidatePath("/admin/round-employees");
@@ -706,177 +977,62 @@ export default async function RoundEmployeesPage({
 
   async function importDivisionEmployees(formData: FormData) {
     "use server";
-
     await requireAdminSession();
 
     const roundId = Number(formData.get("round_id") || 0);
     const divisionCode = String(formData.get("division_code") || "").trim();
 
-    if (!roundId) {
-      redirectWithAlert("error", "กรุณาเลือกรอบประเมิน");
-    }
-
-    if (!divisionCode) {
-      redirectWithAlert("error", "กรุณาเลือกกลุ่มภารกิจ");
-    }
+    if (!roundId) redirectWithAlert("error", "กรุณาเลือกรอบประเมิน");
+    if (!divisionCode) redirectWithAlert("error", "กรุณาเลือกกลุ่มภารกิจ");
 
     await getRoundDraftInfo(roundId);
+    const summary = await importEmployees(roundId, divisionCode);
+    const message = buildImportMessage(summary);
 
-    const pool = await getDbPool();
-
-    const existingDivisionResult = await pool
-      .request()
-      .input("round_id", sql.Int, roundId)
-      .input("division_code", sql.VarChar(20), divisionCode)
-      .query(`
-        SELECT TOP 1 round_employee_id
-        FROM dbo.competency_round_employee
-        WHERE round_id = @round_id
-          AND LTRIM(RTRIM(ISNULL(division_code, ''))) = @division_code;
-      `);
-
-    if (existingDivisionResult.recordset.length > 0) {
+    if (summary.inserted_count === 0) {
       redirectWithAlert(
         "warning",
-        "กลุ่มภารกิจนี้มีผู้ถูกประเมินอยู่ในรอบนี้แล้ว ถ้าต้องการแก้ไขรายชื่อให้จัดการจากตารางด้านล่าง",
-      );
-    }
-
-    const insertResult = await pool
-      .request()
-      .input("round_id", sql.Int, roundId)
-      .input("division_code", sql.VarChar(20), divisionCode)
-      .query(`
-        INSERT INTO dbo.competency_round_employee
-          (round_id, payroll_no, position_code, rank_code, rank_group_id, division_code, dept_code, section_code, status_type)
-        SELECT
-          @round_id,
-          CAST(p.PAYROLLNO AS varchar(20)) AS payroll_no,
-          NULLIF(LTRIM(RTRIM(CAST(p.POSITIONCODE AS varchar(20)))), '') AS position_code,
-          NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '') AS rank_code,
-          rg.rank_group_id,
-          NULLIF(LTRIM(RTRIM(CAST(p.[DIVISION] AS varchar(20)))), '') AS division_code,
-          NULLIF(LTRIM(RTRIM(CAST(p.[DEPT] AS varchar(20)))), '') AS dept_code,
-          NULLIF(LTRIM(RTRIM(CAST(p.[SECTION] AS varchar(20)))), '') AS section_code,
-          0 AS status_type
-        FROM ${ssbDb()}.dbo.PYREXT p
-        JOIN dbo.competency_rank_group_map rgm
-          ON rgm.rank_code = NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '')
-         AND rgm.active_status = 1
-        JOIN dbo.competency_rank_group rg
-          ON rg.rank_group_id = rgm.rank_group_id
-         AND rg.active_status = 1
-        WHERE p.TERMINATEDATE IS NULL
-          AND p.PAYROLLNO IS NOT NULL
-          AND LTRIM(RTRIM(CAST(p.[DIVISION] AS varchar(20)))) = @division_code
-          AND NOT EXISTS (
-            SELECT 1
-            FROM dbo.competency_excluded_section x
-            WHERE x.active_status = 1
-              AND LTRIM(RTRIM(CAST(x.section_code AS varchar(20)))) = LTRIM(RTRIM(CAST(p.[SECTION] AS varchar(20))))
-          )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM dbo.competency_round_employee re
-            WHERE re.round_id = @round_id
-              AND re.payroll_no = CAST(p.PAYROLLNO AS varchar(20))
-          );
-      `);
-
-    const insertedCount = insertResult.rowsAffected.reduce(
-      (sum, count) => sum + count,
-      0,
-    );
-
-    if (insertedCount === 0) {
-      redirectWithAlert(
-        "warning",
-        "ไม่พบเจ้าหน้าที่ในกลุ่มภารกิจนี้ที่สามารถนำเข้าได้ หรือเจ้าหน้าที่ถูกเพิ่มเข้ารอบแล้ว",
+        summary.available_count === 0
+          ? "ไม่พบรายชื่อใหม่ที่สามารถนำเข้าได้"
+          : `ยังนำเข้าไม่ได้ ${message.detail || "เนื่องจากข้อมูลตั้งค่าไม่ครบ"}`,
       );
     }
 
     revalidatePath("/admin/round-employees");
     redirectWithAlert(
-      "success",
-      `นำเข้าผู้ถูกประเมินตามกลุ่มภารกิจเรียบร้อยแล้ว ${insertedCount} รายการ`,
+      message.skipped > 0 ? "warning" : "success",
+      `นำเข้าเรียบร้อยแล้ว ${summary.inserted_count.toLocaleString()} คน${message.skipped > 0 ? ` ข้าม ${message.skipped.toLocaleString()} คน (${message.detail})` : ""}`,
     );
   }
 
   async function importAllEmployees(formData: FormData) {
     "use server";
-
     await requireAdminSession();
 
     const roundId = Number(formData.get("round_id") || 0);
-
-    if (!roundId) {
-      redirectWithAlert("error", "กรุณาเลือกรอบประเมิน");
-    }
+    if (!roundId) redirectWithAlert("error", "กรุณาเลือกรอบประเมิน");
 
     await getRoundDraftInfo(roundId);
+    const summary = await importEmployees(roundId, null);
+    const message = buildImportMessage(summary);
 
-    const pool = await getDbPool();
-
-    const insertResult = await pool
-      .request()
-      .input("round_id", sql.Int, roundId)
-      .query(`
-        INSERT INTO dbo.competency_round_employee
-          (round_id, payroll_no, position_code, rank_code, rank_group_id, division_code, dept_code, section_code, status_type)
-        SELECT
-          @round_id,
-          CAST(p.PAYROLLNO AS varchar(20)) AS payroll_no,
-          NULLIF(LTRIM(RTRIM(CAST(p.POSITIONCODE AS varchar(20)))), '') AS position_code,
-          NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '') AS rank_code,
-          rg.rank_group_id,
-          NULLIF(LTRIM(RTRIM(CAST(p.[DIVISION] AS varchar(20)))), '') AS division_code,
-          NULLIF(LTRIM(RTRIM(CAST(p.[DEPT] AS varchar(20)))), '') AS dept_code,
-          NULLIF(LTRIM(RTRIM(CAST(p.[SECTION] AS varchar(20)))), '') AS section_code,
-          0 AS status_type
-        FROM ${ssbDb()}.dbo.PYREXT p
-        JOIN dbo.competency_rank_group_map rgm
-          ON rgm.rank_code = NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '')
-         AND rgm.active_status = 1
-        JOIN dbo.competency_rank_group rg
-          ON rg.rank_group_id = rgm.rank_group_id
-         AND rg.active_status = 1
-        WHERE p.TERMINATEDATE IS NULL
-          AND p.PAYROLLNO IS NOT NULL
-          AND NOT EXISTS (
-            SELECT 1
-            FROM dbo.competency_excluded_section x
-            WHERE x.active_status = 1
-              AND LTRIM(RTRIM(CAST(x.section_code AS varchar(20)))) = LTRIM(RTRIM(CAST(p.[SECTION] AS varchar(20))))
-          )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM dbo.competency_round_employee re
-            WHERE re.round_id = @round_id
-              AND re.payroll_no = CAST(p.PAYROLLNO AS varchar(20))
-          );
-      `);
-
-    const insertedCount = insertResult.rowsAffected.reduce(
-      (sum, count) => sum + count,
-      0,
-    );
-
-    if (insertedCount === 0) {
+    if (summary.inserted_count === 0) {
       redirectWithAlert(
         "warning",
-        "ไม่พบเจ้าหน้าที่ที่สามารถนำเข้าเพิ่มได้ หรือเจ้าหน้าที่ที่เข้าเงื่อนไขถูกเพิ่มเข้ารอบครบแล้ว",
+        summary.available_count === 0
+          ? "ไม่พบรายชื่อใหม่ที่สามารถนำเข้าได้"
+          : `ยังนำเข้าไม่ได้ ${message.detail || "เนื่องจากข้อมูลตั้งค่าไม่ครบ"}`,
       );
     }
 
     revalidatePath("/admin/round-employees");
     redirectWithAlert(
-      "success",
-      `นำเข้าผู้ถูกประเมินทั้งโรงพยาบาลเรียบร้อยแล้ว ${insertedCount} รายการ`,
+      message.skipped > 0 ? "warning" : "success",
+      `นำเข้าเรียบร้อยแล้ว ${summary.inserted_count.toLocaleString()} คน${message.skipped > 0 ? ` ข้าม ${message.skipped.toLocaleString()} คน (${message.detail})` : ""}`,
     );
   }
 
   const tableState = await getRoundEmployeesTableState();
-
   const [
     rounds,
     divisions,
@@ -893,11 +1049,9 @@ export default async function RoundEmployeesPage({
     getRoundEmployeesPage(tableState),
   ]);
 
-  const roundEmployees = roundEmployeesPage.rows;
   const totalRows = roundEmployeesPage.totalRows;
   const totalPages = Math.max(1, Math.ceil(totalRows / tableState.pageSize));
   const currentPage = Math.min(tableState.page, totalPages);
-
   const draftRounds = rounds.filter((round) => Number(round.status_type) === 0);
 
   const roundOptions = draftRounds.map((round) => ({
@@ -907,7 +1061,7 @@ export default async function RoundEmployeesPage({
 
   const employeeSelectOptions = employeeOptions.map((employee) => ({
     value: employee.payroll_no,
-    label: `${employee.full_name} (${employee.payroll_no}) - ${employee.position_name ?? employee.position_code ?? "ไม่ระบุวิชาชีพ"} / ${employee.rank_group_name ?? "ยังไม่มีกลุ่มระดับ"}`,
+    label: `${employee.full_name} (${employee.payroll_no}) - ${employee.position_name ?? employee.position_code ?? "ไม่ระบุวิชาชีพ"}${employee.site_name ? ` / ${employee.site_name}` : ""}`,
   }));
 
   const divisionOptions = divisions.map((division) => ({
@@ -918,7 +1072,6 @@ export default async function RoundEmployeesPage({
   const existingEmployeeRules = existingEmployeeRuleRows.map((row) => ({
     round_id: row.round_id,
     payroll_no: row.payroll_no,
-    division_code: row.division_code ?? "",
   }));
 
   const roundFilterOptions = rounds.map((round) => ({
@@ -943,14 +1096,12 @@ export default async function RoundEmployeesPage({
         message={alertParams?.alert_message}
       />
 
-      <PageHeader
-        title="จัดผู้ถูกประเมินเข้ารอบประเมิน"
-        description=""
-      />
+      <PageHeader title="จัดผู้ถูกประเมินเข้ารอบประเมิน" description="" />
 
       {draftRounds.length === 0 && (
         <div className="mb-6 rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 dark:border-yellow-900/50 dark:bg-yellow-900/20 dark:text-yellow-200">
-          ไม่มีรอบสถานะร่างสำหรับเพิ่มผู้ถูกประเมิน ถ้ารอบเปิดประเมินแล้วจะไม่สามารถแก้ไขรายชื่อได้
+          ไม่มีรอบสถานะร่างสำหรับเพิ่มผู้ถูกประเมิน
+          ถ้ารอบเปิดประเมินแล้วจะไม่สามารถแก้ไขรายชื่อได้
         </div>
       )}
 
@@ -971,7 +1122,7 @@ export default async function RoundEmployeesPage({
       </div>
 
       <RoundEmployeesTableClient
-        initialRows={roundEmployees}
+        initialRows={roundEmployeesPage.rows}
         initialTotalRows={totalRows}
         initialState={{ ...tableState, page: currentPage }}
         roundOptions={roundFilterOptions}

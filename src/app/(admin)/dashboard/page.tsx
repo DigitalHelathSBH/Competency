@@ -241,7 +241,7 @@ export default async function DashboardPage() {
                 </p>
               </div>
               <Link
-                href="/admin/reports"
+                href="/reports"
                 className="inline-flex h-10 items-center justify-center rounded-lg border border-gray-300 px-4 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
               >
                 เปิดรายงานผล
@@ -358,7 +358,7 @@ export default async function DashboardPage() {
             <>
               <QuickLink href="/admin/round-readiness" title="ตรวจสอบความพร้อม" description="ตรวจเงื่อนไขก่อนเปิดรอบ" />
               <QuickLink href="/admin/round-issues" title="รายการที่ต้องแก้ไข" description="แก้ปัญหาที่ค้างรายคน" />
-              <QuickLink href="/admin/reports" title="รายงานผล" description="ดูคะแนนและสถานะรายกลุ่ม" />
+              <QuickLink href="/reports" title="รายงานผล" description="ดูคะแนนและสถานะรายกลุ่ม" />
             </>
           )}
         </div>

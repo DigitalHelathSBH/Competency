@@ -202,8 +202,7 @@ export default function EvaluationScoreForm({
 
       {data.questions.length === 0 ? (
         <div className="rounded-2xl border border-gray-200 bg-white p-8 text-center text-sm text-gray-500 dark:border-gray-800 dark:bg-white/[0.03] dark:text-gray-400">
-          ยังไม่พบหัวข้อประเมินของรอบนี้ กรุณาให้ Admin ตรวจสอบ
-          competency_round_question
+          ยังไม่พบหัวข้อประเมินสำหรับรายการนี้ กรุณาแจ้งผู้ดูแลระบบตรวจสอบรอบประเมิน
         </div>
       ) : (
         <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">

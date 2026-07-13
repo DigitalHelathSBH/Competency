@@ -3,7 +3,7 @@ import { getSessionCookieName, verifySessionToken } from "./lib/session-core";
 
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
 
-const publicRoutes = ["/login", "/signin"];
+const publicRoutes = ["/login"];
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;

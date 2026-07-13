@@ -70,7 +70,7 @@ async function getSectionOptions() {
   const result = await pool.request().query(`
     SELECT DISTINCT
       LTRIM(RTRIM(CAST(sc.Code AS varchar(20)))) AS section_code,
-      ${ssbDb()}.dbo.GetSSBName(sc.ThaiName) AS section_name
+      sc.ThaiName AS section_name
     FROM ${ssbDb()}.dbo.sectioncode sc
     WHERE sc.Code IS NOT NULL
       AND LTRIM(RTRIM(CAST(sc.Code AS varchar(20)))) <> ''

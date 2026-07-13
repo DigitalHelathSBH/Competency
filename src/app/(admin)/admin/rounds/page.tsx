@@ -3,7 +3,7 @@ import PageHeader from "@/components/competency/PageHeader";
 import DateInput from "@/components/competency/DateInput";
 import RoundTemplateCopyForm from "@/components/competency/RoundTemplateCopyForm";
 import { getRounds, safeFetch, statusText } from "@/lib/competency";
-import { getDbPool, sql } from "@/lib/db";
+import { getDbPool, getSsbDatabaseName, quoteSqlName, sql } from "@/lib/db";
 import { requireAdminSession } from "@/lib/session";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
@@ -18,6 +18,10 @@ type AdminRoundsPageProps = {
     alert_message?: string;
   }>;
 };
+
+function ssbDb() {
+  return quoteSqlName(getSsbDatabaseName());
+}
 
 function getCurrentFiscalYearBE(date = new Date()) {
   const adYear = date.getFullYear();
@@ -78,12 +82,16 @@ function getRoundStatusBadge(statusType: number) {
 
 const ROUND_EDIT_COOKIE = "competency_round_edit_id";
 
-function getRoundOptionLabel(round: { round_code: string; status_type: number }) {
+function getRoundOptionLabel(round: {
+  round_code: string;
+  status_type: number;
+}) {
   return `${round.round_code} (${statusText(round.status_type, "round")})`;
 }
 
-
-export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageProps) {
+export default async function AdminRoundsPage({
+  searchParams,
+}: AdminRoundsPageProps) {
   await requireAdminSession();
   const params = await searchParams;
 
@@ -115,6 +123,7 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
 
     const pool = await getDbPool();
     const transaction = new sql.Transaction(pool);
+    let failureMessage = "";
 
     try {
       await transaction.begin();
@@ -127,58 +136,78 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
 
       const draftCount = Number(draftCheck.recordset[0]?.draft_count || 0);
       if (draftCount > 0) {
+        failureMessage =
+          "มีรอบประเมินสถานะร่างอยู่แล้ว กรุณาแก้ไขหรือเปิดรอบเดิมก่อนสร้างรอบใหม่";
         await transaction.rollback();
-        redirectWithAlert("warning", "มีรอบประเมินสถานะร่างอยู่แล้ว กรุณาแก้ไขหรือเปิดรอบเดิมก่อนสร้างรอบใหม่");
+      } else {
+        const checkResult = await new sql.Request(transaction).input(
+          "round_year",
+          sql.SmallInt,
+          roundYear,
+        ).query(`
+            SELECT ISNULL(MAX(round_no), 0) AS max_round_no
+            FROM dbo.competency_round WITH (UPDLOCK, HOLDLOCK)
+            WHERE round_year = @round_year
+              AND status_type <> 9;
+          `);
+
+        const maxRoundNo = Number(checkResult.recordset[0]?.max_round_no ?? 0);
+        const expectedRoundNo = maxRoundNo + 1;
+
+        if (expectedRoundNo > 2) {
+          failureMessage = `ปีงบ ${roundYear} มีรอบประเมินครบ 2 รอบแล้ว`;
+          await transaction.rollback();
+        } else if (roundNo !== expectedRoundNo) {
+          failureMessage = `ปีงบ ${roundYear} ต้องสร้างรอบ ${expectedRoundNo} เป็นลำดับถัดไปเท่านั้น`;
+          await transaction.rollback();
+        } else {
+          const roundCode = `${roundYear}/${roundNo}`;
+
+          await new sql.Request(transaction)
+            .input("round_year", sql.SmallInt, roundYear)
+            .input("round_no", sql.TinyInt, roundNo)
+            .input("round_code", sql.VarChar(20), roundCode)
+            .input("start_date", sql.Date, startDate)
+            .input("end_date", sql.Date, endDate)
+            .input("created_by", sql.VarChar(20), currentSession.emp_id).query(`
+              INSERT INTO dbo.competency_round
+                (
+                  round_year,
+                  round_no,
+                  round_code,
+                  start_date,
+                  end_date,
+                  status_type,
+                  created_by
+                )
+              VALUES
+                (
+                  @round_year,
+                  @round_no,
+                  @round_code,
+                  @start_date,
+                  @end_date,
+                  0,
+                  @created_by
+                );
+            `);
+
+          await transaction.commit();
+        }
       }
-
-      const checkResult = await new sql.Request(transaction)
-        .input("round_year", sql.SmallInt, roundYear)
-        .query(`
-          SELECT ISNULL(MAX(round_no), 0) AS max_round_no
-          FROM dbo.competency_round WITH (UPDLOCK, HOLDLOCK)
-          WHERE round_year = @round_year
-            AND status_type <> 9;
-        `);
-
-      const maxRoundNo = Number(checkResult.recordset[0]?.max_round_no ?? 0);
-      const expectedRoundNo = maxRoundNo + 1;
-
-      if (expectedRoundNo > 2) {
-        await transaction.rollback();
-        redirectWithAlert("warning", `ปีงบ ${roundYear} มีรอบประเมินครบ 2 รอบแล้ว`);
-      }
-
-      if (roundNo !== expectedRoundNo) {
-        await transaction.rollback();
-        redirectWithAlert("warning", `ปีงบ ${roundYear} ต้องสร้างรอบ ${expectedRoundNo} เป็นลำดับถัดไปเท่านั้น`);
-      }
-
-      const roundCode = `${roundYear}/${roundNo}`;
-
-      await new sql.Request(transaction)
-        .input("round_year", sql.SmallInt, roundYear)
-        .input("round_no", sql.TinyInt, roundNo)
-        .input("round_code", sql.VarChar(20), roundCode)
-        .input("start_date", sql.Date, startDate)
-        .input("end_date", sql.Date, endDate)
-        .input("created_by", sql.VarChar(20), currentSession.emp_id)
-        .query(`
-          INSERT INTO dbo.competency_round
-              (round_year, round_no, round_code, start_date, end_date, status_type, created_by)
-          VALUES
-              (@round_year, @round_no, @round_code, @start_date, @end_date, 0, @created_by);
-        `);
-
-      await transaction.commit();
     } catch (error) {
       try {
-         await transaction.rollback();
+        await transaction.rollback();
       } catch {
-         // ignore rollback error
+        // ignore rollback error
       }
 
       console.error(error);
       redirectWithAlert("error", "ไม่สามารถสร้างรอบประเมินได้");
+    }
+
+    if (failureMessage) {
+      redirectWithAlert("warning", failureMessage);
     }
 
     revalidatePath("/admin/rounds");
@@ -244,15 +273,17 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
     }
 
     const pool = await getDbPool();
+    const transaction = new sql.Transaction(pool);
+    let updated = false;
 
     try {
-      const result = await pool
-        .request()
+      await transaction.begin();
+
+      const result = await new sql.Request(transaction)
         .input("round_id", sql.Int, roundId)
         .input("round_code", sql.VarChar(20), roundCode)
         .input("start_date", sql.Date, startDate)
-        .input("end_date", sql.Date, endDate)
-        .query(`
+        .input("end_date", sql.Date, endDate).query(`
           UPDATE dbo.competency_round
           SET round_code = @round_code,
               start_date = @start_date,
@@ -270,20 +301,134 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
           SELECT @@ROWCOUNT AS affected_rows;
         `);
 
-      const affectedRows = Number(result.recordset[0]?.affected_rows || 0);
+      updated = Number(result.recordset[0]?.affected_rows || 0) > 0;
 
-      if (affectedRows === 0) {
-        redirectWithAlert("warning", "ไม่สามารถแก้ไขได้ อาจไม่ใช่สถานะร่าง หรือชื่อรอบซ้ำกับรอบอื่น");
+      if (!updated) {
+        await transaction.rollback();
+      } else {
+        await new sql.Request(transaction)
+          .input("round_id", sql.Int, roundId)
+          .input("start_date", sql.Date, startDate).query(`
+            WITH employee_base AS (
+              SELECT
+                re.round_employee_id,
+                NULLIF(LTRIM(RTRIM(CAST(p.POSITIONCODE AS varchar(20)))), '') AS position_code,
+                NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '') AS rank_code,
+                NULLIF(LTRIM(RTRIM(CAST(p.[DIVISION] AS varchar(20)))), '') AS division_code,
+                NULLIF(LTRIM(RTRIM(CAST(p.[DEPT] AS varchar(20)))), '') AS dept_code,
+                NULLIF(LTRIM(RTRIM(CAST(p.[SECTION] AS varchar(20)))), '') AS section_code,
+                NULLIF(LTRIM(RTRIM(CAST(p.SITECODE AS varchar(20)))), '') AS site_code,
+                TRY_CONVERT(date, p.FIRSTEMPLOYEEDATE) AS first_employee_date
+              FROM dbo.competency_round_employee re
+              JOIN ${ssbDb()}.dbo.PYREXT p
+                ON CAST(p.PAYROLLNO AS varchar(20)) = re.payroll_no
+               AND p.TERMINATEDATE IS NULL
+              WHERE re.round_id = @round_id
+            ),
+            employee_calc AS (
+              SELECT
+                b.*,
+                CASE
+                  WHEN b.first_employee_date IS NULL
+                    OR b.first_employee_date > @start_date
+                  THEN NULL
+                  ELSE
+                    DATEDIFF(YEAR, b.first_employee_date, @start_date)
+                    - CASE
+                        WHEN DATEADD(
+                          YEAR,
+                          DATEDIFF(YEAR, b.first_employee_date, @start_date),
+                          b.first_employee_date
+                        ) > @start_date
+                        THEN 1
+                        ELSE 0
+                      END
+                END AS service_year,
+                CASE WHEN ISNULL(b.site_code, '') = '1' THEN 'RANK' ELSE 'TENURE' END AS rank_group_source
+              FROM employee_base b
+            ),
+            employee_resolved AS (
+              SELECT
+                c.*,
+                CASE
+                  WHEN c.rank_group_source = 'RANK' THEN rank_map.rank_group_id
+                  ELSE tenure_map.rank_group_id
+                END AS rank_group_id,
+                CAST(ISNULL(site_percent.competency_percent, 20) AS decimal(5,2)) AS competency_percent
+              FROM employee_calc c
+              OUTER APPLY (
+                SELECT TOP 1 rg.rank_group_id
+                FROM dbo.competency_rank_group_map rgm
+                JOIN dbo.competency_rank_group rg
+                  ON rg.rank_group_id = rgm.rank_group_id
+                 AND rg.active_status = 1
+                WHERE rgm.active_status = 1
+                  AND rgm.rank_code = c.rank_code
+                ORDER BY rgm.rank_group_map_id DESC
+              ) rank_map
+              OUTER APPLY (
+                SELECT TOP 1 rg.rank_group_id
+                FROM dbo.competency_tenure_rank_group trg
+                JOIN dbo.competency_rank_group rg
+                  ON rg.rank_group_id = trg.rank_group_id
+                 AND rg.active_status = 1
+                WHERE trg.active_status = 1
+                  AND c.service_year IS NOT NULL
+                  AND c.service_year >= trg.min_service_year
+                  AND (trg.max_service_year IS NULL OR c.service_year < trg.max_service_year)
+                ORDER BY trg.min_service_year DESC, trg.tenure_rank_group_id DESC
+              ) tenure_map
+              OUTER APPLY (
+                SELECT TOP 1 sp.competency_percent
+                FROM dbo.competency_site_percent sp
+                WHERE sp.active_status = 1
+                  AND sp.site_code = c.site_code
+                ORDER BY sp.site_percent_id DESC
+              ) site_percent
+            )
+            UPDATE re
+            SET position_code = src.position_code,
+                rank_code = src.rank_code,
+                rank_group_id = src.rank_group_id,
+                division_code = src.division_code,
+                dept_code = src.dept_code,
+                section_code = src.section_code,
+                site_code = src.site_code,
+                first_employee_date = src.first_employee_date,
+                service_year = src.service_year,
+                rank_group_source = src.rank_group_source,
+                competency_percent = src.competency_percent
+            FROM dbo.competency_round_employee re
+            JOIN employee_resolved src
+              ON src.round_employee_id = re.round_employee_id
+            WHERE re.round_id = @round_id;
+          `);
+
+        await transaction.commit();
       }
     } catch (error) {
+      try {
+        await transaction.rollback();
+      } catch {
+        // ignore rollback error
+      }
+
       console.error(error);
       redirectWithAlert("error", "ไม่สามารถแก้ไขรอบประเมินได้");
+    }
+
+    if (!updated) {
+      redirectWithAlert(
+        "warning",
+        "ไม่สามารถแก้ไขได้ อาจไม่ใช่สถานะร่าง หรือชื่อรอบซ้ำกับรอบอื่น",
+      );
     }
 
     const cookieStore = await cookies();
     cookieStore.delete(ROUND_EDIT_COOKIE);
 
     revalidatePath("/admin/rounds");
+    revalidatePath("/admin/round-employees");
     redirectWithAlert("success", "แก้ไขรอบประเมินเรียบร้อยแล้ว");
   }
 
@@ -303,19 +448,24 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
     }
 
     if (targetRoundId === sourceRoundId) {
-      redirectWithAlert("warning", "รอบต้นทางและรอบปลายทางต้องไม่ใช่รอบเดียวกัน");
+      redirectWithAlert(
+        "warning",
+        "รอบต้นทางและรอบปลายทางต้องไม่ใช่รอบเดียวกัน",
+      );
     }
 
     if (!copyEmployees && !copyAssignments && !copyWeights) {
-      redirectWithAlert("warning", "กรุณาเลือกรายการที่ต้องการคัดลอกอย่างน้อย 1 รายการ");
+      redirectWithAlert(
+        "warning",
+        "กรุณาเลือกรายการที่ต้องการคัดลอกอย่างน้อย 1 รายการ",
+      );
     }
 
     const pool = await getDbPool();
 
     const targetResult = await pool
       .request()
-      .input("target_round_id", sql.Int, targetRoundId)
-      .query(`
+      .input("target_round_id", sql.Int, targetRoundId).query(`
         SELECT TOP 1 round_id, round_code, status_type
         FROM dbo.competency_round
         WHERE round_id = @target_round_id;
@@ -327,13 +477,15 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
     }
 
     if (Number(targetRound.status_type) !== 0) {
-      redirectWithAlert("warning", "คัดลอกได้เฉพาะรอบปลายทางที่ยังเป็นสถานะร่างเท่านั้น");
+      redirectWithAlert(
+        "warning",
+        "คัดลอกได้เฉพาะรอบปลายทางที่ยังเป็นสถานะร่างเท่านั้น",
+      );
     }
 
     const sourceResult = await pool
       .request()
-      .input("source_round_id", sql.Int, sourceRoundId)
-      .query(`
+      .input("source_round_id", sql.Int, sourceRoundId).query(`
         SELECT TOP 1 round_id, round_code, status_type
         FROM dbo.competency_round
         WHERE round_id = @source_round_id
@@ -357,8 +509,7 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
         const weightResult = await new sql.Request(transaction)
           .input("source_round_id", sql.Int, sourceRoundId)
           .input("target_round_id", sql.Int, targetRoundId)
-          .input("created_by", sql.VarChar(20), currentSession.emp_id)
-          .query(`
+          .input("created_by", sql.VarChar(20), currentSession.emp_id).query(`
             DECLARE @inserted int;
 
             INSERT INTO dbo.competency_evaluator_weight
@@ -386,122 +537,297 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
             SELECT @inserted AS inserted_count;
           `);
 
-        weightInsertedCount = Number(weightResult.recordset[0]?.inserted_count || 0);
+        weightInsertedCount = Number(
+          weightResult.recordset[0]?.inserted_count || 0,
+        );
       }
 
       if (copyEmployees) {
         const employeeResult = await new sql.Request(transaction)
           .input("source_round_id", sql.Int, sourceRoundId)
-          .input("target_round_id", sql.Int, targetRoundId)
-          .query(`
-            DECLARE @inserted int;
-
+          .input("target_round_id", sql.Int, targetRoundId).query(`
+            WITH employee_base_raw AS (
+              SELECT
+                CAST(p.PAYROLLNO AS varchar(20)) AS payroll_no,
+                NULLIF(LTRIM(RTRIM(CAST(p.POSITIONCODE AS varchar(20)))), '') AS position_code,
+                NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '') AS rank_code,
+                NULLIF(LTRIM(RTRIM(CAST(p.[DIVISION] AS varchar(20)))), '') AS division_code,
+                NULLIF(LTRIM(RTRIM(CAST(p.[DEPT] AS varchar(20)))), '') AS dept_code,
+                NULLIF(LTRIM(RTRIM(CAST(p.[SECTION] AS varchar(20)))), '') AS section_code,
+                NULLIF(LTRIM(RTRIM(CAST(p.SITECODE AS varchar(20)))), '') AS site_code,
+                TRY_CONVERT(date, p.FIRSTEMPLOYEEDATE) AS first_employee_date,
+                target_round.start_date,
+                ROW_NUMBER() OVER (
+                  PARTITION BY CAST(p.PAYROLLNO AS varchar(20))
+                  ORDER BY src_re.round_employee_id DESC
+                ) AS row_no
+              FROM dbo.competency_round_employee src_re
+              JOIN ${ssbDb()}.dbo.PYREXT p
+                ON CAST(p.PAYROLLNO AS varchar(20)) = src_re.payroll_no
+               AND p.TERMINATEDATE IS NULL
+              JOIN dbo.competency_round target_round
+                ON target_round.round_id = @target_round_id
+              WHERE src_re.round_id = @source_round_id
+                AND src_re.status_type <> 9
+                AND p.PAYROLLNO IS NOT NULL
+            ),
+            employee_base AS (
+              SELECT *
+              FROM employee_base_raw
+              WHERE row_no = 1
+            ),
+            employee_calc AS (
+              SELECT
+                b.*,
+                CASE
+                  WHEN b.first_employee_date IS NULL
+                    OR b.first_employee_date > b.start_date
+                  THEN NULL
+                  ELSE
+                    DATEDIFF(YEAR, b.first_employee_date, b.start_date)
+                    - CASE
+                        WHEN DATEADD(
+                          YEAR,
+                          DATEDIFF(YEAR, b.first_employee_date, b.start_date),
+                          b.first_employee_date
+                        ) > b.start_date
+                        THEN 1
+                        ELSE 0
+                      END
+                END AS service_year,
+                CASE WHEN ISNULL(b.site_code, '') = '1' THEN 'RANK' ELSE 'TENURE' END AS rank_group_source
+              FROM employee_base b
+            ),
+            employee_resolved AS (
+              SELECT
+                c.*,
+                CASE
+                  WHEN c.rank_group_source = 'RANK' THEN rank_map.rank_group_id
+                  ELSE tenure_map.rank_group_id
+                END AS rank_group_id,
+                CAST(ISNULL(site_percent.competency_percent, 20) AS decimal(5,2)) AS competency_percent
+              FROM employee_calc c
+              OUTER APPLY (
+                SELECT TOP 1 rg.rank_group_id
+                FROM dbo.competency_rank_group_map rgm
+                JOIN dbo.competency_rank_group rg
+                  ON rg.rank_group_id = rgm.rank_group_id
+                 AND rg.active_status = 1
+                WHERE rgm.active_status = 1
+                  AND rgm.rank_code = c.rank_code
+                ORDER BY rgm.rank_group_map_id DESC
+              ) rank_map
+              OUTER APPLY (
+                SELECT TOP 1 rg.rank_group_id
+                FROM dbo.competency_tenure_rank_group trg
+                JOIN dbo.competency_rank_group rg
+                  ON rg.rank_group_id = trg.rank_group_id
+                 AND rg.active_status = 1
+                WHERE trg.active_status = 1
+                  AND c.service_year IS NOT NULL
+                  AND c.service_year >= trg.min_service_year
+                  AND (trg.max_service_year IS NULL OR c.service_year < trg.max_service_year)
+                ORDER BY trg.min_service_year DESC, trg.tenure_rank_group_id DESC
+              ) tenure_map
+              OUTER APPLY (
+                SELECT TOP 1 sp.competency_percent
+                FROM dbo.competency_site_percent sp
+                WHERE sp.active_status = 1
+                  AND sp.site_code = c.site_code
+                ORDER BY sp.site_percent_id DESC
+              ) site_percent
+            )
             INSERT INTO dbo.competency_round_employee
-              (round_id, payroll_no, position_code, rank_code, rank_group_id, division_code, dept_code, section_code, status_type)
-            SELECT DISTINCT
+              (
+                round_id,
+                payroll_no,
+                position_code,
+                rank_code,
+                rank_group_id,
+                division_code,
+                dept_code,
+                section_code,
+                site_code,
+                first_employee_date,
+                service_year,
+                rank_group_source,
+                competency_percent,
+                status_type
+              )
+            SELECT
               @target_round_id,
-              CAST(p.PAYROLLNO AS varchar(20)) AS payroll_no,
-              NULLIF(LTRIM(RTRIM(CAST(p.POSITIONCODE AS varchar(20)))), '') AS position_code,
-              NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '') AS rank_code,
-              rg.rank_group_id,
-              NULLIF(LTRIM(RTRIM(CAST(p.[DIVISION] AS varchar(20)))), '') AS division_code,
-              NULLIF(LTRIM(RTRIM(CAST(p.[DEPT] AS varchar(20)))), '') AS dept_code,
-              NULLIF(LTRIM(RTRIM(CAST(p.[SECTION] AS varchar(20)))), '') AS section_code,
-              0 AS status_type
-            FROM dbo.competency_round_employee src_re
-            JOIN SSBDatabase.dbo.PYREXT p
-              ON CAST(p.PAYROLLNO AS varchar(20)) = src_re.payroll_no
-            JOIN dbo.competency_rank_group_map rgm
-              ON rgm.rank_code = NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '')
-             AND rgm.active_status = 1
-            JOIN dbo.competency_rank_group rg
-              ON rg.rank_group_id = rgm.rank_group_id
-             AND rg.active_status = 1
-            WHERE src_re.round_id = @source_round_id
-              AND src_re.status_type <> 9
-              AND p.TERMINATEDATE IS NULL
-              AND p.PAYROLLNO IS NOT NULL
+              e.payroll_no,
+              e.position_code,
+              e.rank_code,
+              e.rank_group_id,
+              e.division_code,
+              e.dept_code,
+              e.section_code,
+              e.site_code,
+              e.first_employee_date,
+              e.service_year,
+              e.rank_group_source,
+              e.competency_percent,
+              0
+            FROM employee_resolved e
+            WHERE e.position_code IS NOT NULL
+              AND e.division_code IS NOT NULL
+              AND e.rank_group_id IS NOT NULL
+              AND NOT (
+                e.rank_group_source = 'TENURE'
+                AND (e.first_employee_date IS NULL OR e.service_year IS NULL)
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM dbo.competency_excluded_section x
+                WHERE x.active_status = 1
+                  AND LTRIM(RTRIM(CAST(x.section_code AS varchar(20)))) = ISNULL(e.section_code, '')
+              )
               AND NOT EXISTS (
                 SELECT 1
                 FROM dbo.competency_round_employee target_re
                 WHERE target_re.round_id = @target_round_id
-                  AND target_re.payroll_no = CAST(p.PAYROLLNO AS varchar(20))
+                  AND target_re.payroll_no = e.payroll_no
               );
 
-            SET @inserted = @@ROWCOUNT;
-            SELECT @inserted AS inserted_count;
+            SELECT @@ROWCOUNT AS inserted_count;
           `);
 
-        employeeInsertedCount = Number(employeeResult.recordset[0]?.inserted_count || 0);
+        employeeInsertedCount = Number(
+          employeeResult.recordset[0]?.inserted_count || 0,
+        );
       }
 
       if (copyAssignments) {
         const assignmentResult = await new sql.Request(transaction)
           .input("source_round_id", sql.Int, sourceRoundId)
-          .input("target_round_id", sql.Int, targetRoundId)
-          .query(`
-            DECLARE @inserted int;
-
+          .input("target_round_id", sql.Int, targetRoundId).query(`
+            WITH evaluator_base AS (
+              SELECT
+                target_re.round_employee_id,
+                target_re.payroll_no AS employee_payroll_no,
+                target_re.rank_group_id AS employee_rank_group_id,
+                src_a.evaluator_level,
+                CAST(ev.PAYROLLNO AS varchar(20)) AS evaluator_payroll_no,
+                NULLIF(LTRIM(RTRIM(CAST(ev.[RANK] AS varchar(20)))), '') AS evaluator_rank_code,
+                NULLIF(LTRIM(RTRIM(CAST(ev.SITECODE AS varchar(20)))), '') AS evaluator_site_code,
+                TRY_CONVERT(date, ev.FIRSTEMPLOYEEDATE) AS evaluator_first_employee_date,
+                target_round.start_date
+              FROM dbo.competency_evaluator_assignment src_a
+              JOIN dbo.competency_round_employee src_re
+                ON src_re.round_employee_id = src_a.round_employee_id
+               AND src_re.round_id = @source_round_id
+               AND src_re.status_type <> 9
+              JOIN dbo.competency_round_employee target_re
+                ON target_re.round_id = @target_round_id
+               AND target_re.payroll_no = src_re.payroll_no
+               AND target_re.status_type <> 9
+              JOIN ${ssbDb()}.dbo.PYREXT ev
+                ON CAST(ev.PAYROLLNO AS varchar(20)) = src_a.evaluator_payroll_no
+               AND ev.TERMINATEDATE IS NULL
+              JOIN dbo.competency_round target_round
+                ON target_round.round_id = @target_round_id
+              WHERE src_a.status_type <> 9
+            ),
+            evaluator_calc AS (
+              SELECT
+                b.*,
+                CASE
+                  WHEN b.evaluator_first_employee_date IS NULL
+                    OR b.evaluator_first_employee_date > b.start_date
+                  THEN NULL
+                  ELSE
+                    DATEDIFF(YEAR, b.evaluator_first_employee_date, b.start_date)
+                    - CASE
+                        WHEN DATEADD(
+                          YEAR,
+                          DATEDIFF(YEAR, b.evaluator_first_employee_date, b.start_date),
+                          b.evaluator_first_employee_date
+                        ) > b.start_date
+                        THEN 1
+                        ELSE 0
+                      END
+                END AS evaluator_service_year,
+                CASE WHEN ISNULL(b.evaluator_site_code, '') = '1' THEN 'RANK' ELSE 'TENURE' END AS evaluator_rank_group_source
+              FROM evaluator_base b
+            ),
+            evaluator_resolved AS (
+              SELECT
+                c.*,
+                CASE
+                  WHEN c.evaluator_rank_group_source = 'RANK' THEN rank_map.rank_group_id
+                  ELSE tenure_map.rank_group_id
+                END AS evaluator_rank_group_id
+              FROM evaluator_calc c
+              OUTER APPLY (
+                SELECT TOP 1 rg.rank_group_id
+                FROM dbo.competency_rank_group_map rgm
+                JOIN dbo.competency_rank_group rg
+                  ON rg.rank_group_id = rgm.rank_group_id
+                 AND rg.active_status = 1
+                WHERE rgm.active_status = 1
+                  AND rgm.rank_code = c.evaluator_rank_code
+                ORDER BY rgm.rank_group_map_id DESC
+              ) rank_map
+              OUTER APPLY (
+                SELECT TOP 1 rg.rank_group_id
+                FROM dbo.competency_tenure_rank_group trg
+                JOIN dbo.competency_rank_group rg
+                  ON rg.rank_group_id = trg.rank_group_id
+                 AND rg.active_status = 1
+                WHERE trg.active_status = 1
+                  AND c.evaluator_service_year IS NOT NULL
+                  AND c.evaluator_service_year >= trg.min_service_year
+                  AND (trg.max_service_year IS NULL OR c.evaluator_service_year < trg.max_service_year)
+                ORDER BY trg.min_service_year DESC, trg.tenure_rank_group_id DESC
+              ) tenure_map
+            )
             INSERT INTO dbo.competency_evaluator_assignment
               (round_employee_id, evaluator_payroll_no, evaluator_level, status_type, submitted_date)
             SELECT DISTINCT
-              target_re.round_employee_id,
-              CAST(ev.PAYROLLNO AS varchar(20)) AS evaluator_payroll_no,
-              src_a.evaluator_level,
-              0 AS status_type,
-              NULL AS submitted_date
-            FROM dbo.competency_evaluator_assignment src_a
-            JOIN dbo.competency_round_employee src_re
-              ON src_re.round_employee_id = src_a.round_employee_id
-             AND src_re.round_id = @source_round_id
-             AND src_re.status_type <> 9
-            JOIN dbo.competency_round_employee target_re
-              ON target_re.round_id = @target_round_id
-             AND target_re.payroll_no = src_re.payroll_no
-             AND target_re.status_type <> 9
-            JOIN SSBDatabase.dbo.PYREXT ev
-              ON CAST(ev.PAYROLLNO AS varchar(20)) = src_a.evaluator_payroll_no
-             AND ev.TERMINATEDATE IS NULL
-            JOIN dbo.competency_rank_group_map eval_rgm
-              ON eval_rgm.rank_code = NULLIF(LTRIM(RTRIM(CAST(ev.[RANK] AS varchar(20)))), '')
-             AND eval_rgm.active_status = 1
-            JOIN dbo.competency_rank_group eval_rg
-              ON eval_rg.rank_group_id = eval_rgm.rank_group_id
-             AND eval_rg.active_status = 1
-            JOIN dbo.competency_rank_group target_rg
-              ON target_rg.rank_group_id = target_re.rank_group_id
-             AND target_rg.active_status = 1
-            WHERE src_a.status_type <> 9
-              AND target_re.payroll_no <> CAST(ev.PAYROLLNO AS varchar(20))
-              AND eval_rg.sort_order >= target_rg.sort_order
+              e.round_employee_id,
+              e.evaluator_payroll_no,
+              e.evaluator_level,
+              0,
+              NULL
+            FROM evaluator_resolved e
+            JOIN dbo.competency_rank_group evaluator_group
+              ON evaluator_group.rank_group_id = e.evaluator_rank_group_id
+             AND evaluator_group.active_status = 1
+            JOIN dbo.competency_rank_group employee_group
+              ON employee_group.rank_group_id = e.employee_rank_group_id
+             AND employee_group.active_status = 1
+            WHERE e.employee_payroll_no <> e.evaluator_payroll_no
+              AND evaluator_group.sort_order >= employee_group.sort_order
               AND NOT EXISTS (
                 SELECT 1
                 FROM dbo.competency_evaluator_assignment target_a
-                WHERE target_a.round_employee_id = target_re.round_employee_id
-                  AND target_a.evaluator_level = src_a.evaluator_level
+                WHERE target_a.round_employee_id = e.round_employee_id
+                  AND target_a.evaluator_level = e.evaluator_level
                   AND target_a.status_type <> 9
               )
               AND NOT EXISTS (
                 SELECT 1
                 FROM dbo.competency_evaluator_assignment target_a
-                WHERE target_a.round_employee_id = target_re.round_employee_id
-                  AND target_a.evaluator_payroll_no = CAST(ev.PAYROLLNO AS varchar(20))
+                WHERE target_a.round_employee_id = e.round_employee_id
+                  AND target_a.evaluator_payroll_no = e.evaluator_payroll_no
                   AND target_a.status_type <> 9
               );
 
-            SET @inserted = @@ROWCOUNT;
-            SELECT @inserted AS inserted_count;
+            SELECT @@ROWCOUNT AS inserted_count;
           `);
 
-        assignmentInsertedCount = Number(assignmentResult.recordset[0]?.inserted_count || 0);
+        assignmentInsertedCount = Number(
+          assignmentResult.recordset[0]?.inserted_count || 0,
+        );
       }
 
       await transaction.commit();
     } catch (error) {
       try {
-          await transaction.rollback();
+        await transaction.rollback();
       } catch {
-           // ignore rollback error
+        // ignore rollback error
       }
 
       console.error(error);
@@ -514,7 +840,8 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
     revalidatePath("/admin/evaluator-weights");
     revalidatePath("/admin/round-readiness");
 
-    const totalInserted = employeeInsertedCount + assignmentInsertedCount + weightInsertedCount;
+    const totalInserted =
+      employeeInsertedCount + assignmentInsertedCount + weightInsertedCount;
     const summary = `ผู้ถูกประเมิน ${employeeInsertedCount.toLocaleString()} คน, ผู้ประเมิน ${assignmentInsertedCount.toLocaleString()} รายการ, น้ำหนัก ${weightInsertedCount.toLocaleString()} รายการ`;
 
     if (totalInserted === 0) {
@@ -542,15 +869,17 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
     try {
       await transaction.begin();
 
-      const request = () => new sql.Request(transaction).input("round_id", sql.Int, roundId);
+      const request = () =>
+        new sql.Request(transaction).input("round_id", sql.Int, roundId);
 
       const roundResult = await request().query(`
-        SELECT TOP 1 round_id, round_code, status_type
+        SELECT TOP 1 round_id, round_code, start_date, status_type
         FROM dbo.competency_round WITH (UPDLOCK, HOLDLOCK)
         WHERE round_id = @round_id;
       `);
 
       const round = roundResult.recordset[0];
+
       if (!round) {
         alertType = "error";
         alertMessage = "ไม่พบรอบประเมิน";
@@ -567,7 +896,32 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
             COUNT(*) AS total_employee,
             SUM(CASE WHEN rank_group_id IS NULL THEN 1 ELSE 0 END) AS missing_rank_group,
             SUM(CASE WHEN NULLIF(LTRIM(RTRIM(ISNULL(position_code, ''))), '') IS NULL THEN 1 ELSE 0 END) AS missing_position_code,
-            SUM(CASE WHEN NULLIF(LTRIM(RTRIM(ISNULL(division_code, ''))), '') IS NULL THEN 1 ELSE 0 END) AS missing_division_code
+            SUM(CASE WHEN NULLIF(LTRIM(RTRIM(ISNULL(division_code, ''))), '') IS NULL THEN 1 ELSE 0 END) AS missing_division_code,
+            SUM(
+              CASE
+                WHEN rank_group_source = 'TENURE'
+                  AND (first_employee_date IS NULL OR service_year IS NULL)
+                THEN 1
+                ELSE 0
+              END
+            ) AS missing_tenure_data,
+            SUM(
+              CASE
+                WHEN rank_group_source IS NULL
+                  OR rank_group_source NOT IN ('RANK', 'TENURE')
+                THEN 1
+                ELSE 0
+              END
+            ) AS invalid_group_source,
+            SUM(
+              CASE
+                WHEN competency_percent IS NULL
+                  OR competency_percent < 0
+                  OR competency_percent > 100
+                THEN 1
+                ELSE 0
+              END
+            ) AS invalid_competency_percent
           FROM dbo.competency_round_employee
           WHERE round_id = @round_id
             AND status_type <> 9;
@@ -575,23 +929,48 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
 
         const employeeCheck = employeeResult.recordset[0] || {};
         const totalEmployee = Number(employeeCheck.total_employee || 0);
+
         if (totalEmployee === 0) {
           problems.push("ยังไม่มีผู้ถูกประเมินในรอบ");
         }
         if (Number(employeeCheck.missing_rank_group || 0) > 0) {
-          problems.push(`มีผู้ถูกประเมินที่ยังไม่มี rank_group ${Number(employeeCheck.missing_rank_group).toLocaleString()} คน`);
+          problems.push(
+            `มีผู้ถูกประเมินที่ยังไม่มีกลุ่มระดับ ${Number(employeeCheck.missing_rank_group).toLocaleString()} คน`,
+          );
         }
         if (Number(employeeCheck.missing_position_code || 0) > 0) {
-          problems.push(`มีผู้ถูกประเมินที่ยังไม่มีรหัสวิชาชีพ ${Number(employeeCheck.missing_position_code).toLocaleString()} คน`);
+          problems.push(
+            `มีผู้ถูกประเมินที่ยังไม่มีข้อมูลวิชาชีพ ${Number(employeeCheck.missing_position_code).toLocaleString()} คน`,
+          );
         }
         if (Number(employeeCheck.missing_division_code || 0) > 0) {
-          problems.push(`มีผู้ถูกประเมินที่ยังไม่มีกลุ่มภารกิจ ${Number(employeeCheck.missing_division_code).toLocaleString()} คน`);
+          problems.push(
+            `มีผู้ถูกประเมินที่ยังไม่มีกลุ่มภารกิจ ${Number(employeeCheck.missing_division_code).toLocaleString()} คน`,
+          );
+        }
+        if (Number(employeeCheck.missing_tenure_data || 0) > 0) {
+          problems.push(
+            `มีผู้ถูกประเมินที่ไม่สามารถคำนวณอายุงาน ณ วันเริ่มรอบได้ ${Number(employeeCheck.missing_tenure_data).toLocaleString()} คน`,
+          );
+        }
+        if (Number(employeeCheck.invalid_group_source || 0) > 0) {
+          problems.push("มีผู้ถูกประเมินที่ข้อมูลการจัดกลุ่มระดับไม่สมบูรณ์");
+        }
+        if (Number(employeeCheck.invalid_competency_percent || 0) > 0) {
+          problems.push("มีผู้ถูกประเมินที่สัดส่วน Competency ไม่ถูกต้อง");
         }
 
         const assignmentResult = await request().query(`
           SELECT
             SUM(CASE WHEN ISNULL(a1.assignment_count, 0) = 0 THEN 1 ELSE 0 END) AS missing_level_1,
-            SUM(CASE WHEN ISNULL(re.evaluator_required_type, 2) = 2 AND ISNULL(a2.assignment_count, 0) = 0 THEN 1 ELSE 0 END) AS missing_level_2
+            SUM(
+              CASE
+                WHEN ISNULL(re.evaluator_required_type, 2) = 2
+                  AND ISNULL(a2.assignment_count, 0) = 0
+                THEN 1
+                ELSE 0
+              END
+            ) AS missing_level_2
           FROM dbo.competency_round_employee re
           LEFT JOIN (
             SELECT round_employee_id, COUNT(*) AS assignment_count
@@ -615,49 +994,154 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
 
         const assignmentCheck = assignmentResult.recordset[0] || {};
         if (Number(assignmentCheck.missing_level_1 || 0) > 0) {
-          problems.push(`ยังไม่มีหัวหน้าใกล้ชิด ${Number(assignmentCheck.missing_level_1).toLocaleString()} คน`);
+          problems.push(
+            `ยังไม่มีหัวหน้าใกล้ชิด ${Number(assignmentCheck.missing_level_1).toLocaleString()} คน`,
+          );
         }
         if (Number(assignmentCheck.missing_level_2 || 0) > 0) {
-          problems.push(`ยังไม่มีหัวหน้าใหญ่ ${Number(assignmentCheck.missing_level_2).toLocaleString()} คน`);
+          problems.push(
+            `ยังไม่มีหัวหน้าใหญ่ ${Number(assignmentCheck.missing_level_2).toLocaleString()} คน`,
+          );
         }
 
         const invalidAssignmentResult = await request().query(`
+          WITH evaluator_base AS (
+            SELECT
+              ea.evaluator_payroll_no,
+              re.payroll_no AS employee_payroll_no,
+              re.rank_group_id AS employee_rank_group_id,
+              ev.PAYROLLNO AS found_payroll_no,
+              ev.TERMINATEDATE,
+              NULLIF(LTRIM(RTRIM(CAST(ev.[RANK] AS varchar(20)))), '') AS evaluator_rank_code,
+              NULLIF(LTRIM(RTRIM(CAST(ev.SITECODE AS varchar(20)))), '') AS evaluator_site_code,
+              TRY_CONVERT(date, ev.FIRSTEMPLOYEEDATE) AS evaluator_first_employee_date,
+              r.start_date
+            FROM dbo.competency_evaluator_assignment ea
+            JOIN dbo.competency_round_employee re
+              ON re.round_employee_id = ea.round_employee_id
+             AND re.round_id = @round_id
+             AND re.status_type <> 9
+            JOIN dbo.competency_round r
+              ON r.round_id = re.round_id
+            LEFT JOIN ${ssbDb()}.dbo.PYREXT ev
+              ON CAST(ev.PAYROLLNO AS varchar(20)) = ea.evaluator_payroll_no
+            WHERE ea.status_type <> 9
+          ),
+          evaluator_calc AS (
+            SELECT
+              b.*,
+              CASE
+                WHEN b.evaluator_first_employee_date IS NULL
+                  OR b.evaluator_first_employee_date > b.start_date
+                THEN NULL
+                ELSE
+                  DATEDIFF(YEAR, b.evaluator_first_employee_date, b.start_date)
+                  - CASE
+                      WHEN DATEADD(
+                        YEAR,
+                        DATEDIFF(YEAR, b.evaluator_first_employee_date, b.start_date),
+                        b.evaluator_first_employee_date
+                      ) > b.start_date
+                      THEN 1
+                      ELSE 0
+                    END
+              END AS evaluator_service_year,
+              CASE
+                WHEN ISNULL(b.evaluator_site_code, '') = '1' THEN 'RANK'
+                ELSE 'TENURE'
+              END AS evaluator_rank_group_source
+            FROM evaluator_base b
+          ),
+          evaluator_resolved AS (
+            SELECT
+              c.*,
+              CASE
+                WHEN c.evaluator_rank_group_source = 'RANK' THEN rank_map.rank_group_id
+                ELSE tenure_map.rank_group_id
+              END AS evaluator_rank_group_id
+            FROM evaluator_calc c
+            OUTER APPLY (
+              SELECT TOP 1 rg.rank_group_id
+              FROM dbo.competency_rank_group_map rgm
+              JOIN dbo.competency_rank_group rg
+                ON rg.rank_group_id = rgm.rank_group_id
+               AND rg.active_status = 1
+              WHERE rgm.active_status = 1
+                AND rgm.rank_code = c.evaluator_rank_code
+              ORDER BY rgm.rank_group_map_id DESC
+            ) rank_map
+            OUTER APPLY (
+              SELECT TOP 1 rg.rank_group_id
+              FROM dbo.competency_tenure_rank_group trg
+              JOIN dbo.competency_rank_group rg
+                ON rg.rank_group_id = trg.rank_group_id
+               AND rg.active_status = 1
+              WHERE trg.active_status = 1
+                AND c.evaluator_service_year IS NOT NULL
+                AND c.evaluator_service_year >= trg.min_service_year
+                AND (trg.max_service_year IS NULL OR c.evaluator_service_year < trg.max_service_year)
+              ORDER BY trg.min_service_year DESC, trg.tenure_rank_group_id DESC
+            ) tenure_map
+          )
           SELECT
-            SUM(CASE WHEN ea.evaluator_payroll_no = re.payroll_no THEN 1 ELSE 0 END) AS self_assignment_count,
-            SUM(CASE WHEN ev.PAYROLLNO IS NULL OR ev.TERMINATEDATE IS NOT NULL THEN 1 ELSE 0 END) AS invalid_evaluator_count,
-            SUM(CASE WHEN eval_rg.rank_group_id IS NULL THEN 1 ELSE 0 END) AS evaluator_missing_rank_group_count,
-            SUM(CASE WHEN eval_rg.rank_group_id IS NOT NULL AND emp_rg.rank_group_id IS NOT NULL AND eval_rg.sort_order < emp_rg.sort_order THEN 1 ELSE 0 END) AS evaluator_lower_rank_count
-          FROM dbo.competency_evaluator_assignment ea
-          JOIN dbo.competency_round_employee re
-            ON re.round_employee_id = ea.round_employee_id
-           AND re.round_id = @round_id
-           AND re.status_type <> 9
-          LEFT JOIN dbo.competency_rank_group emp_rg
-            ON emp_rg.rank_group_id = re.rank_group_id
-           AND emp_rg.active_status = 1
-          LEFT JOIN SSBDatabase.dbo.PYREXT ev
-            ON CAST(ev.PAYROLLNO AS varchar(20)) = ea.evaluator_payroll_no
-          LEFT JOIN dbo.competency_rank_group_map eval_rgm
-            ON eval_rgm.rank_code = NULLIF(LTRIM(RTRIM(CAST(ev.[RANK] AS varchar(20)))), '')
-           AND eval_rgm.active_status = 1
-          LEFT JOIN dbo.competency_rank_group eval_rg
-            ON eval_rg.rank_group_id = eval_rgm.rank_group_id
-           AND eval_rg.active_status = 1
-          WHERE ea.status_type <> 9;
+            SUM(
+              CASE
+                WHEN evaluator_payroll_no = employee_payroll_no THEN 1
+                ELSE 0
+              END
+            ) AS self_assignment_count,
+            SUM(
+              CASE
+                WHEN found_payroll_no IS NULL OR TERMINATEDATE IS NOT NULL THEN 1
+                ELSE 0
+              END
+            ) AS invalid_evaluator_count,
+            SUM(
+              CASE
+                WHEN found_payroll_no IS NOT NULL
+                  AND TERMINATEDATE IS NULL
+                  AND evaluator_rank_group_id IS NULL
+                THEN 1
+                ELSE 0
+              END
+            ) AS evaluator_missing_rank_group_count,
+            SUM(
+              CASE
+                WHEN evaluator_group.rank_group_id IS NOT NULL
+                  AND employee_group.rank_group_id IS NOT NULL
+                  AND evaluator_group.sort_order < employee_group.sort_order
+                THEN 1
+                ELSE 0
+              END
+            ) AS evaluator_lower_rank_count
+          FROM evaluator_resolved resolved
+          LEFT JOIN dbo.competency_rank_group evaluator_group
+            ON evaluator_group.rank_group_id = resolved.evaluator_rank_group_id
+           AND evaluator_group.active_status = 1
+          LEFT JOIN dbo.competency_rank_group employee_group
+            ON employee_group.rank_group_id = resolved.employee_rank_group_id
+           AND employee_group.active_status = 1;
         `);
 
-        const invalidAssignmentCheck = invalidAssignmentResult.recordset[0] || {};
+        const invalidAssignmentCheck =
+          invalidAssignmentResult.recordset[0] || {};
         if (Number(invalidAssignmentCheck.self_assignment_count || 0) > 0) {
           problems.push("มีรายการที่ผู้ประเมินเป็นคนเดียวกับผู้ถูกประเมิน");
         }
         if (Number(invalidAssignmentCheck.invalid_evaluator_count || 0) > 0) {
-          problems.push("มีผู้ประเมินที่ไม่พบใน PYREXT หรือพ้นสภาพแล้ว");
+          problems.push("มีผู้ประเมินที่พ้นสภาพหรือไม่พบข้อมูลบุคลากร");
         }
-        if (Number(invalidAssignmentCheck.evaluator_missing_rank_group_count || 0) > 0) {
-          problems.push("มีผู้ประเมินที่ยังไม่ได้ map RANK เข้ากลุ่มระดับ");
+        if (
+          Number(
+            invalidAssignmentCheck.evaluator_missing_rank_group_count || 0,
+          ) > 0
+        ) {
+          problems.push("มีผู้ประเมินที่ยังไม่มีกลุ่มระดับ");
         }
-        if (Number(invalidAssignmentCheck.evaluator_lower_rank_count || 0) > 0) {
-          problems.push("มีผู้ประเมินที่ระดับต่ำกว่าผู้ถูกประเมิน");
+        if (
+          Number(invalidAssignmentCheck.evaluator_lower_rank_count || 0) > 0
+        ) {
+          problems.push("มีผู้ประเมินที่กลุ่มระดับต่ำกว่าผู้ถูกประเมิน");
         }
 
         const duplicateAssignmentResult = await request().query(`
@@ -675,47 +1159,89 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
           ) x;
         `);
 
-        if (Number(duplicateAssignmentResult.recordset[0]?.duplicate_count || 0) > 0) {
+        if (
+          Number(duplicateAssignmentResult.recordset[0]?.duplicate_count || 0) >
+          0
+        ) {
           problems.push("มีรายการผู้ประเมินซ้ำในระดับเดียวกัน");
         }
 
-        const defaultWeightResult = await request().query(`
-          SELECT
-            COUNT(DISTINCT evaluator_level) AS level_count,
-            ISNULL(SUM(CAST(weight_percent AS decimal(10,2))), 0) AS total_weight
-          FROM dbo.competency_evaluator_weight
-          WHERE round_id = @round_id
-            AND active_status = 1
-            AND ISNULL(LTRIM(RTRIM(division_code)), '') = '';
-        `);
-
-        const defaultWeight = defaultWeightResult.recordset[0] || {};
-        if (Number(defaultWeight.level_count || 0) < 2 || Math.abs(Number(defaultWeight.total_weight || 0) - 100) > 0.01) {
-          problems.push("ยังไม่ได้กำหนดน้ำหนัก default ให้ครบ 100%");
-        }
-
         const invalidWeightScopeResult = await request().query(`
-          SELECT COUNT(*) AS invalid_scope_count
-          FROM (
+          WITH RequiredScopes AS (
+            SELECT DISTINCT
+              ISNULL(
+                NULLIF(LTRIM(RTRIM(CAST(re.division_code AS varchar(20)))), ''),
+                '__NO_DIVISION__'
+              ) AS scope_value
+            FROM dbo.competency_round_employee re
+            WHERE re.round_id = @round_id
+              AND re.status_type <> 9
+              AND ISNULL(re.evaluator_required_type, 2) = 2
+          ),
+          WeightRules AS (
             SELECT
-              ISNULL(LTRIM(RTRIM(division_code)), '') AS division_code,
-              COUNT(DISTINCT evaluator_level) AS level_count,
-              SUM(CAST(weight_percent AS decimal(10,2))) AS total_weight
-            FROM dbo.competency_evaluator_weight
-            WHERE round_id = @round_id
-              AND active_status = 1
-            GROUP BY ISNULL(LTRIM(RTRIM(division_code)), '')
-            HAVING COUNT(DISTINCT evaluator_level) <> 2
-                OR ABS(SUM(CAST(weight_percent AS decimal(10,2))) - 100) > 0.01
-          ) x;
+              ISNULL(
+                NULLIF(LTRIM(RTRIM(CAST(w.division_code AS varchar(20)))), ''),
+                '__DEFAULT__'
+              ) AS scope_value,
+              COUNT(CASE WHEN w.active_status = 1 THEN 1 END) AS active_row_count,
+              COUNT(
+                DISTINCT CASE
+                  WHEN w.active_status = 1
+                    AND w.evaluator_level IN (1, 2)
+                  THEN w.evaluator_level
+                END
+              ) AS level_count,
+              SUM(
+                CASE
+                  WHEN w.active_status = 1
+                  THEN CAST(w.weight_percent AS decimal(10,2))
+                  ELSE 0
+                END
+              ) AS total_weight
+            FROM dbo.competency_evaluator_weight w
+            WHERE w.round_id = @round_id
+            GROUP BY ISNULL(
+              NULLIF(LTRIM(RTRIM(CAST(w.division_code AS varchar(20)))), ''),
+              '__DEFAULT__'
+            )
+          )
+          SELECT COUNT(*) AS invalid_scope_count
+          FROM RequiredScopes required_scope
+          LEFT JOIN WeightRules specific_rule
+            ON specific_rule.scope_value = required_scope.scope_value
+          LEFT JOIN WeightRules default_rule
+            ON default_rule.scope_value = '__DEFAULT__'
+          WHERE
+            (
+              ISNULL(specific_rule.active_row_count, 0) > 0
+              AND (
+                ISNULL(specific_rule.level_count, 0) <> 2
+                OR ABS(ISNULL(specific_rule.total_weight, 0) - 100) >= 0.01
+              )
+            )
+            OR
+            (
+              ISNULL(specific_rule.active_row_count, 0) = 0
+              AND (
+                ISNULL(default_rule.level_count, 0) <> 2
+                OR ABS(ISNULL(default_rule.total_weight, 0) - 100) >= 0.01
+              )
+            );
         `);
 
-        if (Number(invalidWeightScopeResult.recordset[0]?.invalid_scope_count || 0) > 0) {
-          problems.push("มีชุดน้ำหนักผู้ประเมินที่รวมไม่ครบ 100%");
+        const invalidWeightScopeCount = Number(
+          invalidWeightScopeResult.recordset[0]?.invalid_scope_count || 0,
+        );
+
+        if (invalidWeightScopeCount > 0) {
+          problems.push(
+            `มีผู้ถูกประเมินแบบสองระดับที่ยังไม่มีชุดน้ำหนักครบ 100% จำนวน ${invalidWeightScopeCount.toLocaleString()} กลุ่มภารกิจ`,
+          );
         }
 
         const commonQuestionResult = await request().query(`
-          SELECT COUNT(DISTINCT q.question_no) AS common_count
+          SELECT COUNT(DISTINCT q.fixed_question_no) AS common_count
           FROM dbo.competency_question q
           JOIN dbo.competency_question_version qv
             ON qv.question_id = q.question_id
@@ -723,11 +1249,11 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
            AND qv.active_status = 1
           WHERE q.active_status = 1
             AND q.question_scope = 'COMMON'
-            AND q.question_no BETWEEN 1 AND 4;
+            AND q.fixed_question_no BETWEEN 1 AND 4;
         `);
 
         if (Number(commonQuestionResult.recordset[0]?.common_count || 0) < 4) {
-          problems.push("หัวข้อ COMMON ข้อ 1-4 ยังไม่ครบ");
+          problems.push("หัวข้อประเมินส่วนกลางข้อ 1-4 ยังไม่ครบ");
         }
 
         const professionQuestionResult = await request().query(`
@@ -737,28 +1263,58 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
             WHERE round_id = @round_id
               AND status_type <> 9
               AND NULLIF(LTRIM(RTRIM(position_code)), '') IS NOT NULL
-          ), required_numbers AS (
-            SELECT 5 AS question_no UNION ALL SELECT 6 UNION ALL SELECT 7
-          )
-          SELECT COUNT(*) AS missing_profession_count
-          FROM round_positions rp
-          CROSS JOIN required_numbers rn
-          WHERE NOT EXISTS (
-            SELECT 1
-            FROM dbo.competency_question q
-            JOIN dbo.competency_question_version qv
+          ),
+          map_summary AS (
+            SELECT
+              rp.position_code,
+              COUNT(DISTINCT CASE WHEN m.active_status = 1 THEN m.question_no END) AS active_map_count,
+              COUNT(
+                DISTINCT CASE
+                  WHEN m.active_status = 1
+                    AND q.question_scope = 'PROFESSION'
+                    AND q.active_status = 1
+                    AND qv.question_version_id IS NOT NULL
+                  THEN m.question_no
+                END
+              ) AS valid_map_count,
+              COUNT(
+                DISTINCT CASE
+                  WHEN m.active_status = 1
+                    AND q.question_scope = 'PROFESSION'
+                    AND q.active_status = 1
+                    AND qv.question_version_id IS NOT NULL
+                  THEN m.question_id
+                END
+              ) AS distinct_topic_count
+            FROM round_positions rp
+            LEFT JOIN dbo.competency_profession_question_map m
+              ON m.position_code = rp.position_code
+             AND m.active_status = 1
+            LEFT JOIN dbo.competency_question q
+              ON q.question_id = m.question_id
+            LEFT JOIN dbo.competency_question_version qv
               ON qv.question_id = q.question_id
              AND qv.is_current = 1
              AND qv.active_status = 1
-            WHERE q.active_status = 1
-              AND q.question_scope = 'PROFESSION'
-              AND q.question_no = rn.question_no
-              AND q.position_code = rp.position_code
-          );
+            GROUP BY rp.position_code
+          )
+          SELECT
+            SUM(CASE WHEN active_map_count NOT IN (0, 3) THEN 1 ELSE 0 END) AS partial_count,
+            SUM(CASE WHEN active_map_count = 3 AND valid_map_count <> 3 THEN 1 ELSE 0 END) AS invalid_topic_count,
+            SUM(CASE WHEN active_map_count = 3 AND distinct_topic_count <> 3 THEN 1 ELSE 0 END) AS duplicate_topic_count
+          FROM map_summary;
         `);
 
-        if (Number(professionQuestionResult.recordset[0]?.missing_profession_count || 0) > 0) {
-          problems.push(`หัวข้อ PROFESSION ข้อ 5-7 ยังไม่ครบ ${Number(professionQuestionResult.recordset[0]?.missing_profession_count || 0).toLocaleString()} รายการ`);
+        const professionQuestionCheck =
+          professionQuestionResult.recordset[0] || {};
+        if (Number(professionQuestionCheck.partial_count || 0) > 0) {
+          problems.push("มีวิชาชีพที่กำหนดหัวข้อเพิ่มเติมไม่ครบข้อ 5-7");
+        }
+        if (Number(professionQuestionCheck.invalid_topic_count || 0) > 0) {
+          problems.push("มีวิชาชีพที่เลือกหัวข้อเพิ่มเติมซึ่งไม่พร้อมใช้งาน");
+        }
+        if (Number(professionQuestionCheck.duplicate_topic_count || 0) > 0) {
+          problems.push("มีวิชาชีพที่เลือกหัวข้อเพิ่มเติมซ้ำกัน");
         }
 
         const descriptionResult = await request().query(`
@@ -770,50 +1326,69 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
             WHERE round_id = @round_id
               AND status_type <> 9
               AND rank_group_id IS NOT NULL
-          ), required_pairs AS (
-            SELECT DISTINCT
-              q.question_no,
-              ae.rank_group_id
-            FROM active_employees ae
-            JOIN dbo.competency_question q
-              ON q.active_status = 1
-             AND q.question_scope = 'COMMON'
-             AND q.question_no BETWEEN 1 AND 4
+              AND NULLIF(LTRIM(RTRIM(position_code)), '') IS NOT NULL
+          ),
+          common_questions AS (
+            SELECT qv.question_version_id
+            FROM dbo.competency_question q
             JOIN dbo.competency_question_version qv
               ON qv.question_id = q.question_id
              AND qv.is_current = 1
              AND qv.active_status = 1
+            WHERE q.active_status = 1
+              AND q.question_scope = 'COMMON'
+              AND q.fixed_question_no BETWEEN 1 AND 4
+          ),
+          profession_questions AS (
+            SELECT
+              m.position_code,
+              qv.question_version_id
+            FROM dbo.competency_profession_question_map m
+            JOIN dbo.competency_question q
+              ON q.question_id = m.question_id
+             AND q.question_scope = 'PROFESSION'
+             AND q.active_status = 1
+            JOIN dbo.competency_question_version qv
+              ON qv.question_id = q.question_id
+             AND qv.is_current = 1
+             AND qv.active_status = 1
+            WHERE m.active_status = 1
+          ),
+          required_pairs AS (
+            SELECT DISTINCT
+              ae.rank_group_id,
+              cq.question_version_id
+            FROM active_employees ae
+            CROSS JOIN common_questions cq
 
             UNION
 
             SELECT DISTINCT
-              q.question_no,
-              ae.rank_group_id
+              ae.rank_group_id,
+              pq.question_version_id
             FROM active_employees ae
-            JOIN dbo.competency_question q
-              ON q.active_status = 1
-             AND q.question_scope = 'PROFESSION'
-             AND q.question_no BETWEEN 5 AND 7
-             AND q.position_code = ae.position_code
-            JOIN dbo.competency_question_version qv
-              ON qv.question_id = q.question_id
-             AND qv.is_current = 1
-             AND qv.active_status = 1
+            JOIN profession_questions pq
+              ON pq.position_code = ae.position_code
           )
           SELECT COUNT(*) AS missing_description_count
           FROM required_pairs rp
           WHERE NOT EXISTS (
             SELECT 1
             FROM dbo.competency_question_description_version dv
-            WHERE dv.question_no = rp.question_no
+            WHERE dv.question_version_id = rp.question_version_id
               AND dv.rank_group_id = rp.rank_group_id
-              AND dv.is_current = 1
               AND dv.active_status = 1
           );
         `);
 
-        if (Number(descriptionResult.recordset[0]?.missing_description_count || 0) > 0) {
-          problems.push(`คำอธิบายหัวข้อยังไม่ครบ ${Number(descriptionResult.recordset[0]?.missing_description_count || 0).toLocaleString()} รายการ`);
+        if (
+          Number(
+            descriptionResult.recordset[0]?.missing_description_count || 0,
+          ) > 0
+        ) {
+          problems.push(
+            `คำอธิบายหัวข้อยังไม่ครบ ${Number(descriptionResult.recordset[0]?.missing_description_count || 0).toLocaleString()} รายการ`,
+          );
         }
 
         if (problems.length > 0) {
@@ -831,11 +1406,21 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
               WHERE round_id = @round_id
                 AND status_type <> 9
                 AND NULLIF(LTRIM(RTRIM(position_code)), '') IS NOT NULL
-            ), current_questions AS (
+            ),
+            profession_counts AS (
               SELECT
-                q.question_no,
+                rp.position_code,
+                COUNT(DISTINCT m.question_no) AS profession_count
+              FROM round_positions rp
+              LEFT JOIN dbo.competency_profession_question_map m
+                ON m.position_code = rp.position_code
+               AND m.active_status = 1
+              GROUP BY rp.position_code
+            ),
+            common_current AS (
+              SELECT
+                q.fixed_question_no AS question_no,
                 qv.question_version_id,
-                CAST(NULL AS varchar(20)) AS position_code,
                 q.max_score
               FROM dbo.competency_question q
               JOIN dbo.competency_question_version qv
@@ -844,41 +1429,77 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
                AND qv.active_status = 1
               WHERE q.active_status = 1
                 AND q.question_scope = 'COMMON'
-                AND q.question_no BETWEEN 1 AND 4
-
-              UNION ALL
-
+                AND q.fixed_question_no BETWEEN 1 AND 4
+            ),
+            profession_current AS (
               SELECT
-                q.question_no,
+                m.position_code,
+                m.question_no,
                 qv.question_version_id,
-                q.position_code,
                 q.max_score
-              FROM dbo.competency_question q
+              FROM dbo.competency_profession_question_map m
+              JOIN dbo.competency_question q
+                ON q.question_id = m.question_id
+               AND q.question_scope = 'PROFESSION'
+               AND q.active_status = 1
               JOIN dbo.competency_question_version qv
                 ON qv.question_id = q.question_id
                AND qv.is_current = 1
                AND qv.active_status = 1
-              JOIN round_positions rp
-                ON rp.position_code = q.position_code
-              WHERE q.active_status = 1
-                AND q.question_scope = 'PROFESSION'
-                AND q.question_no BETWEEN 5 AND 7
+              WHERE m.active_status = 1
             )
             INSERT INTO dbo.competency_round_question
-              (round_id, question_no, question_version_id, position_code, max_score, active_status)
-            SELECT DISTINCT
+              (
+                round_id,
+                position_code,
+                question_no,
+                question_version_id,
+                max_score,
+                weight_percent,
+                active_status,
+                created_by
+              )
+            SELECT
               @round_id,
-              question_no,
-              question_version_id,
-              position_code,
-              max_score,
-              1
-            FROM current_questions;
+              rp.position_code,
+              cq.question_no,
+              cq.question_version_id,
+              cq.max_score,
+              CAST(
+                CASE WHEN ISNULL(pc.profession_count, 0) = 3 THEN 15 ELSE 25 END
+                AS decimal(5,2)
+              ) AS weight_percent,
+              1,
+              NULL
+            FROM round_positions rp
+            JOIN profession_counts pc
+              ON pc.position_code = rp.position_code
+            CROSS JOIN common_current cq
+
+            UNION ALL
+
+            SELECT
+              @round_id,
+              rp.position_code,
+              pq.question_no,
+              pq.question_version_id,
+              pq.max_score,
+              CAST(CASE WHEN pq.question_no = 7 THEN 10 ELSE 15 END AS decimal(5,2)),
+              1,
+              NULL
+            FROM round_positions rp
+            JOIN profession_counts pc
+              ON pc.position_code = rp.position_code
+             AND pc.profession_count = 3
+            JOIN profession_current pq
+              ON pq.position_code = rp.position_code;
 
             SELECT @@ROWCOUNT AS copied_question_count;
           `);
 
-          const copiedQuestionCount = Number(copyResult.recordset[0]?.copied_question_count || 0);
+          const copiedQuestionCount = Number(
+            copyResult.recordset[0]?.copied_question_count || 0,
+          );
 
           await request().query(`
             UPDATE dbo.competency_round
@@ -893,9 +1514,9 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
       }
     } catch (error) {
       try {
-         await transaction.rollback();
+        await transaction.rollback();
       } catch {
-         // ignore rollback error
+        // ignore rollback error
       }
 
       console.error(error);
@@ -907,7 +1528,7 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
     revalidatePath("/admin/round-readiness");
     revalidatePath("/admin/round-issues");
     revalidatePath("/admin/questions");
-    revalidatePath("/admin/question-descriptions");
+    revalidatePath("/admin/profession-questions");
 
     redirectWithAlert(alertType, alertMessage);
   }
@@ -919,20 +1540,28 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
   const hasDraftRound = draftRounds.length > 0;
 
   const maxRoundNoInCurrentYear = rounds
-    .filter((round) => Number(round.round_year) === defaultRoundYear && Number(round.status_type) !== 9)
+    .filter(
+      (round) =>
+        Number(round.round_year) === defaultRoundYear &&
+        Number(round.status_type) !== 9,
+    )
     .reduce((max, round) => Math.max(max, Number(round.round_no)), 0);
 
   const nextRoundNo = maxRoundNoInCurrentYear + 1;
   const hasTwoRoundsInCurrentYear = nextRoundNo > 2;
   const canCreateRound = !hasDraftRound && !hasTwoRoundsInCurrentYear;
 
-  const defaultDates = getDefaultRoundDates(defaultRoundYear, nextRoundNo <= 2 ? nextRoundNo : 2);
+  const defaultDates = getDefaultRoundDates(
+    defaultRoundYear,
+    nextRoundNo <= 2 ? nextRoundNo : 2,
+  );
   const defaultRoundCode = `${defaultRoundYear}/${nextRoundNo}`;
 
   const cookieStore = await cookies();
   const editRoundId = Number(cookieStore.get(ROUND_EDIT_COOKIE)?.value || 0);
   const editRound = rounds.find(
-    (round) => Number(round.round_id) === editRoundId && Number(round.status_type) === 0,
+    (round) =>
+      Number(round.round_id) === editRoundId && Number(round.status_type) === 0,
   );
 
   const templateTargetRoundOptions = draftRounds.map((round) => ({
@@ -941,7 +1570,10 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
   }));
 
   const templateSourceRoundOptions = rounds
-    .filter((round) => Number(round.status_type) !== 9 && Number(round.status_type) !== 0)
+    .filter(
+      (round) =>
+        Number(round.status_type) !== 9 && Number(round.status_type) !== 0,
+    )
     .sort((a, b) => {
       const yearDiff = Number(b.round_year) - Number(a.round_year);
       if (yearDiff !== 0) return yearDiff;
@@ -958,7 +1590,10 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
     <div>
       <ActionAlert type={params?.alert_type} message={params?.alert_message} />
 
-      <PageHeader title="จัดการรอบประเมิน" description="สร้างและแก้ไขรอบประเมิน เช่น 2569/1, 2569/2" />
+      <PageHeader
+        title="จัดการรอบประเมิน"
+        description="สร้างและแก้ไขรอบประเมิน เช่น 2569/1, 2569/2"
+      />
 
       <RoundTemplateCopyForm
         targetRoundOptions={templateTargetRoundOptions}
@@ -968,16 +1603,23 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
 
       {editRound && (
         <div className="mb-6 rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03]">
-          <h2 className="mb-1 text-lg font-semibold text-gray-800 dark:text-white/90">แก้ไขรอบประเมิน</h2>
+          <h2 className="mb-1 text-lg font-semibold text-gray-800 dark:text-white/90">
+            แก้ไขรอบประเมิน
+          </h2>
           <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
             แก้ไขได้เฉพาะรอบที่ยังเป็นสถานะร่างเท่านั้น
           </p>
 
-          <form action={updateDraftRound} className="grid grid-cols-1 gap-4 md:grid-cols-4">
+          <form
+            action={updateDraftRound}
+            className="grid grid-cols-1 gap-4 md:grid-cols-4"
+          >
             <input type="hidden" name="round_id" value={editRound.round_id} />
 
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">ชื่อรอบ</label>
+              <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                ชื่อรอบ
+              </label>
               <input
                 name="round_code"
                 type="text"
@@ -988,7 +1630,9 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
             </div>
 
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">วันที่เริ่ม</label>
+              <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                วันที่เริ่ม
+              </label>
               <DateInput
                 id="edit_start_date"
                 name="start_date"
@@ -999,7 +1643,9 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
             </div>
 
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">วันที่สิ้นสุด</label>
+              <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                วันที่สิ้นสุด
+              </label>
               <DateInput
                 id="edit_end_date"
                 name="end_date"
@@ -1030,20 +1676,30 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
       )}
 
       <div className="mb-6 rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03]">
-        <h2 className="mb-4 text-lg font-semibold text-gray-800 dark:text-white/90">สร้างรอบประเมินใหม่</h2>
+        <h2 className="mb-4 text-lg font-semibold text-gray-800 dark:text-white/90">
+          สร้างรอบประเมินใหม่
+        </h2>
 
         {hasDraftRound ? (
           <div className="rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 dark:border-yellow-900/50 dark:bg-yellow-900/20 dark:text-yellow-200">
-            มีรอบประเมินสถานะร่างอยู่แล้ว คือ {draftRounds.map((round) => round.round_code).join(", ")} กรุณาแก้ไขหรือเปิดรอบเดิมก่อนสร้างรอบใหม่
+            มีรอบประเมินสถานะร่างอยู่แล้ว คือ{" "}
+            {draftRounds.map((round) => round.round_code).join(", ")}{" "}
+            กรุณาแก้ไขหรือเปิดรอบเดิมก่อนสร้างรอบใหม่
           </div>
         ) : hasTwoRoundsInCurrentYear ? (
           <div className="rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 dark:border-yellow-900/50 dark:bg-yellow-900/20 dark:text-yellow-200">
-            ปีงบ {defaultRoundYear} มีรอบประเมินครบ 2 รอบแล้ว ไม่สามารถสร้างรอบเพิ่มได้
+            ปีงบ {defaultRoundYear} มีรอบประเมินครบ 2 รอบแล้ว
+            ไม่สามารถสร้างรอบเพิ่มได้
           </div>
         ) : (
-          <form action={submitCreateRound} className="grid grid-cols-1 gap-4 md:grid-cols-5">
+          <form
+            action={submitCreateRound}
+            className="grid grid-cols-1 gap-4 md:grid-cols-5"
+          >
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">ปี พ.ศ.</label>
+              <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                ปี พ.ศ.
+              </label>
               <input
                 name="round_year"
                 type="number"
@@ -1055,7 +1711,9 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
             </div>
 
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">รอบ</label>
+              <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                รอบ
+              </label>
               <input
                 name="round_no"
                 type="number"
@@ -1069,7 +1727,9 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
             </div>
 
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">วันที่เริ่ม</label>
+              <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                วันที่เริ่ม
+              </label>
               <DateInput
                 id="start_date"
                 name="start_date"
@@ -1080,7 +1740,9 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
             </div>
 
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">วันที่สิ้นสุด</label>
+              <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+                วันที่สิ้นสุด
+              </label>
               <DateInput
                 id="end_date"
                 name="end_date"
@@ -1111,17 +1773,25 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
           <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-800">
             <thead className="bg-gray-50 dark:bg-gray-900/40">
               <tr>
-                {["รอบ", "วันที่เริ่ม", "วันที่สิ้นสุด", "สถานะ", "จัดการ"].map((h) => (
-                  <th key={h} className="px-5 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-                    {h}
-                  </th>
-                ))}
+                {["รอบ", "วันที่เริ่ม", "วันที่สิ้นสุด", "สถานะ", "จัดการ"].map(
+                  (h) => (
+                    <th
+                      key={h}
+                      className="px-5 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400"
+                    >
+                      {h}
+                    </th>
+                  ),
+                )}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
               {rounds.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-5 py-8 text-center text-sm text-gray-500">
+                  <td
+                    colSpan={5}
+                    className="px-5 py-8 text-center text-sm text-gray-500"
+                  >
                     ยังไม่มีรอบประเมิน
                   </td>
                 </tr>
@@ -1131,11 +1801,21 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
 
                   return (
                     <tr key={round.round_id}>
-                      <td className="px-5 py-4 text-sm font-medium text-gray-700 dark:text-gray-300">{round.round_code}</td>
-                      <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">{formatThaiDate(round.start_date, "full")}</td>
-                      <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">{formatThaiDate(round.end_date, "full")}</td>
+                      <td className="px-5 py-4 text-sm font-medium text-gray-700 dark:text-gray-300">
+                        {round.round_code}
+                      </td>
                       <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
-                        <span className={getRoundStatusBadge(Number(round.status_type))}>
+                        {formatThaiDate(round.start_date, "full")}
+                      </td>
+                      <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
+                        {formatThaiDate(round.end_date, "full")}
+                      </td>
+                      <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
+                        <span
+                          className={getRoundStatusBadge(
+                            Number(round.status_type),
+                          )}
+                        >
                           {statusText(round.status_type, "round")}
                         </span>
                       </td>
@@ -1143,7 +1823,11 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
                         {isDraft ? (
                           <div className="flex flex-wrap gap-2">
                             <form action={startEditRound}>
-                              <input type="hidden" name="round_id" value={round.round_id} />
+                              <input
+                                type="hidden"
+                                name="round_id"
+                                value={round.round_id}
+                              />
                               <button
                                 type="submit"
                                 className="inline-flex h-9 items-center justify-center rounded-lg bg-[#f8ac59] px-4 text-sm font-medium text-white hover:bg-[#f7a142]"
@@ -1153,7 +1837,11 @@ export default async function AdminRoundsPage({ searchParams }: AdminRoundsPageP
                             </form>
 
                             <form action={openDraftRound}>
-                              <input type="hidden" name="round_id" value={round.round_id} />
+                              <input
+                                type="hidden"
+                                name="round_id"
+                                value={round.round_id}
+                              />
                               <button
                                 type="submit"
                                 className="inline-flex h-9 items-center justify-center rounded-lg bg-[#1ab394] px-4 text-sm font-medium text-white hover:bg-[#18a689]"
