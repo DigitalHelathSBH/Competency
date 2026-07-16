@@ -30,6 +30,8 @@ type RoundEmployeeOptionRow = {
   rank_order: number;
   division_code: string | null;
   division_name: string | null;
+  section_code: string | null;
+  section_name: string | null;
 };
 
 type EvaluatorOptionRow = {
@@ -386,7 +388,9 @@ async function getRoundEmployeeOptions() {
       rg.rank_group_name,
       ISNULL(rg.sort_order, 0) AS rank_order,
       re.division_code,
-      ${ssbDb()}.dbo.GetSSBName(ISNULL(ds.thainame, ds.englishname)) AS division_name
+      ${ssbDb()}.dbo.GetSSBName(ISNULL(ds.thainame, ds.englishname)) AS division_name,
+      re.section_code,
+      sectioncode.ThaiName AS section_name
     FROM dbo.competency_round_employee re
     JOIN dbo.competency_round r
       ON r.round_id = re.round_id
@@ -402,6 +406,8 @@ async function getRoundEmployeeOptions() {
     LEFT JOIN ${ssbDb()}.dbo.SYSCONFIG ds
       ON ds.CODE = re.division_code
      AND ds.CTRLCODE = '10028'
+    LEFT JOIN ${ssbDb()}.dbo.sectioncode sectioncode
+      ON sectioncode.Code = re.section_code
     WHERE re.status_type <> 9
     ORDER BY r.round_year DESC, r.round_no DESC, ${ssbDb()}.dbo.GetUserFullName(re.payroll_no);
   `);
@@ -1038,16 +1044,6 @@ async function saveAssignment(formData: FormData) {
     );
   }
 
-  if (
-    Number(evaluator.evaluator_rank_order) <
-    Number(roundEmployee.employee_rank_order)
-  ) {
-    redirectWithAlert(
-      "warning",
-      "ผู้ประเมินต้องมีกลุ่มระดับเท่ากันหรือสูงกว่าผู้ถูกประเมิน",
-    );
-  }
-
   try {
     if (roundEmployee.cancelled_assignment_id) {
       await pool
@@ -1234,16 +1230,6 @@ async function updateAssignment(formData: FormData) {
     redirectWithAlert(
       "error",
       "ไม่พบผู้ประเมิน หรือยังไม่สามารถจัดกลุ่มระดับของผู้ประเมินได้",
-    );
-  }
-
-  if (
-    Number(evaluator.evaluator_rank_order) <
-    Number(roundEmployee.employee_rank_order)
-  ) {
-    redirectWithAlert(
-      "warning",
-      "ผู้ประเมินต้องมีกลุ่มระดับเท่ากันหรือสูงกว่าผู้ถูกประเมิน",
     );
   }
 
@@ -1537,6 +1523,7 @@ async function bulkAssignDivision(formData: FormData) {
 
   const roundId = Number(formData.get("round_id") || 0);
   const divisionCode = String(formData.get("division_code") || "").trim();
+  const sectionCode = String(formData.get("section_code") || "").trim();
   const evaluatorPayrollNo = String(
     formData.get("evaluator_payroll_no") || "",
   ).trim();
@@ -1590,23 +1577,16 @@ async function bulkAssignDivision(formData: FormData) {
     .request()
     .input("round_id", sql.Int, roundId)
     .input("division_code", sql.VarChar(20), divisionCode)
+    .input("section_code", sql.VarChar(20), sectionCode || null)
     .input("evaluator_level", sql.Int, evaluatorLevel)
-    .input("evaluator_payroll_no", sql.VarChar(20), evaluatorPayrollNo)
-    .input(
-      "evaluator_rank_order",
-      sql.Int,
-      Number(evaluator.evaluator_rank_order),
-    ).query(`
+    .input("evaluator_payroll_no", sql.VarChar(20), evaluatorPayrollNo).query(`
       SELECT COUNT(*) AS target_count
       FROM dbo.competency_round_employee re
-      JOIN dbo.competency_rank_group erg
-        ON erg.rank_group_id = re.rank_group_id
-       AND erg.active_status = 1
       WHERE re.round_id = @round_id
         AND re.status_type <> 9
         AND re.division_code = @division_code
+        AND (@section_code IS NULL OR re.section_code = @section_code)
         AND re.payroll_no <> @evaluator_payroll_no
-        AND @evaluator_rank_order >= ISNULL(erg.sort_order, 0)
         AND NOT EXISTS (
           SELECT 1
           FROM dbo.competency_evaluator_assignment a
@@ -1628,7 +1608,9 @@ async function bulkAssignDivision(formData: FormData) {
   if (targetCount === 0) {
     redirectWithAlert(
       "warning",
-      "ไม่พบผู้ถูกประเมินที่สามารถกำหนดผู้ประเมินแบบกลุ่มได้ อาจถูกกำหนดครบแล้ว หรือระดับผู้ประเมินไม่เข้าเงื่อนไข",
+      sectionCode
+        ? "ไม่พบผู้ถูกประเมินในหน่วยงานนี้ที่สามารถกำหนดผู้ประเมินได้ หรือถูกกำหนดครบแล้ว"
+        : "ไม่พบผู้ถูกประเมินในกลุ่มงานนี้ที่สามารถกำหนดผู้ประเมินได้ หรือถูกกำหนดครบแล้ว",
     );
   }
 
@@ -1639,13 +1621,9 @@ async function bulkAssignDivision(formData: FormData) {
       .request()
       .input("round_id", sql.Int, roundId)
       .input("division_code", sql.VarChar(20), divisionCode)
+      .input("section_code", sql.VarChar(20), sectionCode || null)
       .input("evaluator_level", sql.Int, evaluatorLevel)
-      .input("evaluator_payroll_no", sql.VarChar(20), evaluatorPayrollNo)
-      .input(
-        "evaluator_rank_order",
-        sql.Int,
-        Number(evaluator.evaluator_rank_order),
-      ).query(`
+      .input("evaluator_payroll_no", sql.VarChar(20), evaluatorPayrollNo).query(`
         INSERT INTO dbo.competency_evaluator_assignment
         (
           round_employee_id,
@@ -1661,14 +1639,11 @@ async function bulkAssignDivision(formData: FormData) {
           0,
           NULL
         FROM dbo.competency_round_employee re
-        JOIN dbo.competency_rank_group erg
-          ON erg.rank_group_id = re.rank_group_id
-         AND erg.active_status = 1
         WHERE re.round_id = @round_id
           AND re.status_type <> 9
           AND re.division_code = @division_code
+          AND (@section_code IS NULL OR re.section_code = @section_code)
           AND re.payroll_no <> @evaluator_payroll_no
-          AND @evaluator_rank_order >= ISNULL(erg.sort_order, 0)
           AND NOT EXISTS (
             SELECT 1
             FROM dbo.competency_evaluator_assignment a
@@ -2033,7 +2008,12 @@ export default async function AssignmentsPage({
     payroll_no: row.payroll_no,
     rank_order: row.rank_order,
     division_code: String(row.division_code || "").trim(),
-    employee_label: `${row.employee_full_name} (${row.payroll_no}) • ${row.rank_group_name || row.rank_name || "ไม่ระบุกลุ่มระดับ"} • ${row.division_name || row.division_code || "ไม่ระบุกลุ่มงาน"}`,
+    section_code: String(row.section_code || "").trim(),
+    section_label:
+      row.section_name ||
+      row.section_code ||
+      "ไม่ระบุหน่วยงาน",
+    employee_label: `${row.employee_full_name} (${row.payroll_no}) • ${row.section_name || row.section_code || "ไม่ระบุหน่วยงาน"}`,
   }));
 
   const roundEmployeeDivisionOptions = Array.from(
@@ -2059,7 +2039,7 @@ export default async function AssignmentsPage({
     payroll_no: row.payroll_no,
     rank_order: row.rank_order,
     division_code: String(row.division_code || "").trim(),
-    evaluator_label: `${row.evaluator_full_name} (${row.payroll_no}) • ${row.rank_group_name || row.rank_name || "ไม่ระบุกลุ่มระดับ"} • ${row.division_name || row.division_code || "ไม่ระบุกลุ่มงาน"}`,
+    evaluator_label: `${row.evaluator_full_name} (${row.payroll_no}) • ${row.division_name || row.division_code || "ไม่ระบุกลุ่มงาน"}`,
   }));
 
   const prefillRoundEmployee = assignmentPrefillFromCookie

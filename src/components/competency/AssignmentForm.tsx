@@ -175,7 +175,6 @@ export default function AssignmentForm({
       .filter(
         (option) => option.payroll_no !== selectedRoundEmployee.payroll_no,
       )
-      .filter((option) => option.rank_order >= selectedRoundEmployee.rank_order)
       .filter((option) => !usedEvaluatorSet.has(option.payroll_no))
       .map((option) => ({
         value: option.payroll_no,
@@ -235,7 +234,7 @@ export default function AssignmentForm({
 
       <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
         เลือกรอบ ผู้ถูกประเมิน และระดับผู้ประเมิน
-        ระบบจะแสดงเฉพาะผู้ประเมินที่มีระดับเท่ากันหรือสูงกว่าผู้ถูกประเมิน
+        ระบบอนุญาตให้เลือกผู้ประเมินได้ทุกกลุ่มระดับ
       </p>
 
       {isEditMode && (
@@ -387,8 +386,8 @@ export default function AssignmentForm({
         {roundEmployeeId && availableEvaluatorOptions.length === 0 && (
           <div className="lg:col-span-12">
             <p className="rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs leading-5 text-yellow-800 dark:border-yellow-500/20 dark:bg-yellow-500/10 dark:text-yellow-200">
-              ไม่พบผู้ประเมินที่มีระดับเท่ากันหรือสูงกว่าผู้ถูกประเมิน
-              หรือผู้ประเมินที่เข้าเงื่อนไขถูกใช้แล้ว
+              ไม่พบผู้ประเมินที่พร้อมใช้งาน
+              หรือผู้ประเมินที่เลือกได้ถูกกำหนดให้ผู้ถูกประเมินรายนี้แล้ว
             </p>
           </div>
         )}
@@ -430,7 +429,7 @@ export default function AssignmentForm({
 
       <p className="mt-4 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-200">
         หน้านี้แก้ไขได้เฉพาะรอบสถานะร่าง
-        และระบบจะแสดงเฉพาะผู้ประเมินที่มีกลุ่มระดับเท่ากันหรือสูงกว่าผู้ถูกประเมิน
+        ผู้ประเมินสามารถอยู่กลุ่มระดับต่ำกว่า เท่ากัน หรือสูงกว่าผู้ถูกประเมินได้
       </p>
     </div>
   );

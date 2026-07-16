@@ -15,6 +15,8 @@ type RoundEmployeeOption = {
   employee_label: string;
   rank_order: number;
   division_code: string;
+  section_code: string;
+  section_label: string;
 };
 
 type EvaluatorOption = {
@@ -60,52 +62,131 @@ export default function AssignmentBulkForm({
 
   const [roundId, setRoundId] = useState(defaultRoundId);
   const [divisionCode, setDivisionCode] = useState("");
+  const [sectionCode, setSectionCode] = useState("");
   const [evaluatorLevel, setEvaluatorLevel] = useState("1");
   const [evaluatorPayrollNo, setEvaluatorPayrollNo] = useState("");
 
-  const availableDivisionOptions = useMemo(() => {
-    if (!roundId || !evaluatorLevel) return [];
-
-    const usedLevelSet = new Set(
+  const usedLevelSet = useMemo(() => {
+    return new Set(
       existingAssignmentRules
         .filter((rule) => String(rule.evaluator_level) === evaluatorLevel)
         .map((rule) => String(rule.round_employee_id)),
     );
+  }, [evaluatorLevel, existingAssignmentRules]);
 
+  const availableEmployees = useMemo(() => {
+    if (!roundId || !evaluatorLevel) return [];
+
+    return roundEmployeeOptions
+      .filter((employee) => String(employee.round_id) === roundId)
+      .filter(
+        (employee) =>
+          !usedLevelSet.has(String(employee.round_employee_id)),
+      );
+  }, [evaluatorLevel, roundEmployeeOptions, roundId, usedLevelSet]);
+
+  const availableDivisionOptions = useMemo(() => {
     const availableDivisionCodeSet = new Set(
-      roundEmployeeOptions
-        .filter((employee) => String(employee.round_id) === roundId)
-        .filter((employee) => !usedLevelSet.has(String(employee.round_employee_id)))
+      availableEmployees
         .map((employee) => employee.division_code)
         .filter(Boolean),
     );
 
-    return divisionOptions.filter((option) => availableDivisionCodeSet.has(option.value));
-  }, [divisionOptions, evaluatorLevel, existingAssignmentRules, roundEmployeeOptions, roundId]);
+    return divisionOptions.filter((option) =>
+      availableDivisionCodeSet.has(option.value),
+    );
+  }, [availableEmployees, divisionOptions]);
 
-  const targetEmployees = useMemo(() => {
+  const availableSectionOptions = useMemo(() => {
+    if (!divisionCode) return [];
+
+    const sectionMap = new Map<string, SelectOption>();
+
+    for (const employee of availableEmployees) {
+      if (employee.division_code !== divisionCode) continue;
+
+      const code = String(employee.section_code || "").trim();
+      if (!code) continue;
+
+      sectionMap.set(code, {
+        value: code,
+        label: `${employee.section_label || code} (${code})`,
+      });
+    }
+
+    return [
+      { value: "", label: "ทุกหน่วยงานในกลุ่มงาน" },
+      ...Array.from(sectionMap.values()).sort((a, b) =>
+        a.label.localeCompare(b.label, "th"),
+      ),
+    ];
+  }, [availableEmployees, divisionCode]);
+
+  const baseTargetEmployees = useMemo(() => {
     if (!roundId || !divisionCode || !evaluatorLevel) return [];
 
-    const usedLevelSet = new Set(
+    return availableEmployees
+      .filter((employee) => employee.division_code === divisionCode)
+      .filter(
+        (employee) =>
+          !sectionCode || employee.section_code === sectionCode,
+      );
+  }, [
+    availableEmployees,
+    divisionCode,
+    evaluatorLevel,
+    roundId,
+    sectionCode,
+  ]);
+
+  const targetEmployees = useMemo(() => {
+    if (!evaluatorPayrollNo) return baseTargetEmployees;
+
+    const sameEvaluatorEmployeeSet = new Set(
       existingAssignmentRules
-        .filter((rule) => String(rule.evaluator_level) === evaluatorLevel)
+        .filter(
+          (rule) =>
+            rule.evaluator_payroll_no === evaluatorPayrollNo,
+        )
         .map((rule) => String(rule.round_employee_id)),
     );
 
-    return roundEmployeeOptions
-      .filter((employee) => String(employee.round_id) === roundId)
-      .filter((employee) => employee.division_code === divisionCode)
-      .filter((employee) => !usedLevelSet.has(String(employee.round_employee_id)));
-  }, [divisionCode, evaluatorLevel, existingAssignmentRules, roundEmployeeOptions, roundId]);
+    return baseTargetEmployees
+      .filter(
+        (employee) =>
+          employee.payroll_no !== evaluatorPayrollNo,
+      )
+      .filter(
+        (employee) =>
+          !sameEvaluatorEmployeeSet.has(
+            String(employee.round_employee_id),
+          ),
+      );
+  }, [
+    baseTargetEmployees,
+    evaluatorPayrollNo,
+    existingAssignmentRules,
+  ]);
 
   const availableEvaluatorOptions = useMemo(() => {
-    if (!roundId || !divisionCode || targetEmployees.length === 0) return [];
+    if (
+      !roundId ||
+      !divisionCode ||
+      baseTargetEmployees.length === 0
+    ) {
+      return [];
+    }
 
     return evaluatorOptions.map((option) => ({
       value: option.payroll_no,
       label: option.evaluator_label,
     }));
-  }, [divisionCode, evaluatorOptions, roundId, targetEmployees.length]);
+  }, [
+    baseTargetEmployees.length,
+    divisionCode,
+    evaluatorOptions,
+    roundId,
+  ]);
 
   const evaluatorOptionExists = availableEvaluatorOptions.some(
     (option) => option.value === evaluatorPayrollNo,
@@ -122,17 +203,25 @@ export default function AssignmentBulkForm({
   function handleRoundChange(value: string) {
     setRoundId(value);
     setDivisionCode("");
+    setSectionCode("");
     setEvaluatorPayrollNo("");
   }
 
   function handleDivisionChange(value: string) {
     setDivisionCode(value);
+    setSectionCode("");
+    setEvaluatorPayrollNo("");
+  }
+
+  function handleSectionChange(value: string) {
+    setSectionCode(value);
     setEvaluatorPayrollNo("");
   }
 
   function handleLevelChange(value: string) {
     setEvaluatorLevel(value);
     setDivisionCode("");
+    setSectionCode("");
     setEvaluatorPayrollNo("");
   }
 
@@ -143,10 +232,15 @@ export default function AssignmentBulkForm({
       </h2>
 
       <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
-        เลือกรอบ กลุ่มงาน ระดับผู้ประเมิน และผู้ประเมิน 1 คน ระบบจะมอบหมายให้ผู้ถูกประเมินในกลุ่มงานนั้นที่ยังไม่มีผู้ประเมินระดับนั้น
+        เลือกรอบ กลุ่มงาน ระดับผู้ประเมิน และผู้ประเมิน
+        หากไม่เลือกหน่วยงาน ระบบจะมอบหมายให้ทั้งกลุ่มงาน
+        แต่ถ้าเลือกหน่วยงาน ระบบจะมอบหมายเฉพาะหน่วยงานนั้น
       </p>
 
-      <form action={bulkAssignDivisionAction} className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+      <form
+        action={bulkAssignDivisionAction}
+        className="grid grid-cols-1 gap-4 lg:grid-cols-12"
+      >
         <div className="lg:col-span-2">
           <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
             รอบประเมิน
@@ -155,7 +249,9 @@ export default function AssignmentBulkForm({
             name="round_id"
             required
             value={roundId}
-            onChange={(event) => handleRoundChange(event.target.value)}
+            onChange={(event) =>
+              handleRoundChange(event.target.value)
+            }
             className={selectClassName}
           >
             <option value="">เลือกรอบประเมิน</option>
@@ -175,7 +271,9 @@ export default function AssignmentBulkForm({
             name="evaluator_level"
             required
             value={evaluatorLevel}
-            onChange={(event) => handleLevelChange(event.target.value)}
+            onChange={(event) =>
+              handleLevelChange(event.target.value)
+            }
             className={selectClassName}
           >
             <option value="1">หัวหน้าใกล้ชิด</option>
@@ -198,42 +296,88 @@ export default function AssignmentBulkForm({
           />
         </div>
 
-        <div className="lg:col-span-5">
+        <div className="lg:col-span-2">
+          <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+            หน่วยงาน
+          </label>
+          <SearchableSelect
+            key={`bulk-section-${roundId}-${divisionCode}-${evaluatorLevel}-${sectionCode}-${availableSectionOptions.length}`}
+            name="section_code"
+            defaultValue={sectionCode}
+            placeholder={
+              divisionCode
+                ? "ทุกหน่วยงาน"
+                : "เลือกกลุ่มงานก่อน"
+            }
+            options={availableSectionOptions}
+            onValueChange={handleSectionChange}
+          />
+        </div>
+
+        <div className="lg:col-span-3">
           <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
             ผู้ประเมิน
           </label>
           <SearchableSelect
-            key={`bulk-evaluator-${roundId}-${divisionCode}-${evaluatorLevel}-${availableEvaluatorOptions.length}`}
+            key={`bulk-evaluator-${roundId}-${divisionCode}-${sectionCode}-${evaluatorLevel}-${availableEvaluatorOptions.length}`}
             name="evaluator_payroll_no"
             required
             defaultValue={evaluatorPayrollNo}
-            placeholder={divisionCode ? "ค้นหาผู้ประเมิน" : "กรุณาเลือกกลุ่มงานก่อน"}
+            placeholder={
+              divisionCode
+                ? "ค้นหาผู้ประเมิน"
+                : "กรุณาเลือกกลุ่มงานก่อน"
+            }
             options={availableEvaluatorOptions}
-            onValueChange={(value) => setEvaluatorPayrollNo(value)}
+            onValueChange={(value) =>
+              setEvaluatorPayrollNo(value)
+            }
           />
         </div>
 
         {roundId && availableDivisionOptions.length === 0 && (
           <div className="lg:col-span-12">
             <p className="rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs leading-5 text-yellow-800 dark:border-yellow-500/20 dark:bg-yellow-500/10 dark:text-yellow-200">
-              ไม่มีกลุ่มงานที่ต้องกำหนดผู้ประเมินระดับนี้แล้ว หรือถูกกำหนดครบแล้ว
+              ไม่มีกลุ่มงานที่ต้องกำหนดผู้ประเมินระดับนี้แล้ว
+              หรือถูกกำหนดครบแล้ว
             </p>
           </div>
         )}
 
-        {roundId && divisionCode && targetEmployees.length === 0 && (
-          <div className="lg:col-span-12">
-            <p className="rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs leading-5 text-yellow-800 dark:border-yellow-500/20 dark:bg-yellow-500/10 dark:text-yellow-200">
-              กลุ่มงานนี้ไม่มีผู้ถูกประเมินที่ต้องกำหนดผู้ประเมินระดับนี้แล้ว หรือผู้ถูกประเมินถูกกำหนดครบแล้ว
-            </p>
-          </div>
-        )}
+        {roundId &&
+          divisionCode &&
+          baseTargetEmployees.length === 0 && (
+            <div className="lg:col-span-12">
+              <p className="rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs leading-5 text-yellow-800 dark:border-yellow-500/20 dark:bg-yellow-500/10 dark:text-yellow-200">
+                {sectionCode
+                  ? "หน่วยงานนี้ไม่มีผู้ถูกประเมินที่ต้องกำหนดผู้ประเมินระดับนี้แล้ว"
+                  : "กลุ่มงานนี้ไม่มีผู้ถูกประเมินที่ต้องกำหนดผู้ประเมินระดับนี้แล้ว"}
+              </p>
+            </div>
+          )}
+
+        {evaluatorPayrollNo &&
+          baseTargetEmployees.length > 0 &&
+          targetEmployees.length === 0 && (
+            <div className="lg:col-span-12">
+              <p className="rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs leading-5 text-yellow-800 dark:border-yellow-500/20 dark:bg-yellow-500/10 dark:text-yellow-200">
+                ผู้ประเมินคนนี้ไม่สามารถถูกมอบหมายให้รายการที่เลือกได้
+                เนื่องจากเป็นผู้ถูกประเมินเอง
+                หรือถูกกำหนดให้ผู้ถูกประเมินเหล่านี้ในอีกระดับแล้ว
+              </p>
+            </div>
+          )}
 
         {targetEmployees.length > 0 && (
           <div className="lg:col-span-12">
             <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-200">
-              จะมอบหมายให้ผู้ถูกประเมินที่ยังไม่มีผู้ประเมินระดับนี้ จำนวน {targetEmployees.length.toLocaleString()} คน
-              หากผู้ประเมินอยู่ในกลุ่มนี้ ระบบจะข้ามเฉพาะตัวผู้ประเมินเอง และบันทึกให้คนอื่นที่เข้าเงื่อนไขอัตโนมัติ
+              จะมอบหมายให้ผู้ถูกประเมินที่ยังไม่มีผู้ประเมินระดับนี้ จำนวน{" "}
+              {targetEmployees.length.toLocaleString()} คน
+              {sectionCode
+                ? " เฉพาะหน่วยงานที่เลือก"
+                : " ทั้งกลุ่มงาน"}
+              โดยระบบอนุญาตให้ผู้ประเมินอยู่กลุ่มระดับใดก็ได้
+              และจะข้ามเฉพาะตัวผู้ประเมินเองหรือรายการที่ถูกกำหนดซ้ำ
             </p>
           </div>
         )}
@@ -242,7 +386,11 @@ export default function AssignmentBulkForm({
           <button
             type="submit"
             disabled={disableSubmit}
-            className={disableSubmit ? disabledButtonClassName : saveButtonClassName}
+            className={
+              disableSubmit
+                ? disabledButtonClassName
+                : saveButtonClassName
+            }
           >
             กำหนดผู้ประเมินแบบกลุ่ม
           </button>
