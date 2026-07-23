@@ -75,10 +75,8 @@ type EmployeeSnapshotRow = {
   section_code: string | null;
   site_code: string | null;
   first_employee_date: Date | string | null;
-  round_start_date: Date | string | null;
   service_year: number | null;
   rank_group_source: "RANK" | "TENURE";
-  is_start_after_round: number;
   competency_percent: number;
   is_section_excluded: number;
 };
@@ -89,7 +87,6 @@ type ImportSummaryRow = {
   skipped_missing_position: number;
   skipped_missing_division: number;
   skipped_missing_start_date: number;
-  skipped_start_after_round: number;
   skipped_missing_rank_group: number;
 };
 
@@ -250,9 +247,8 @@ function employeeResolutionCte(additionalWhere = "") {
       SELECT
         b.*,
         CASE
-          WHEN b.first_employee_date IS NULL
-            OR b.first_employee_date > b.start_date
-          THEN NULL
+          WHEN b.first_employee_date IS NULL THEN NULL
+          WHEN b.first_employee_date > b.start_date THEN 0
           ELSE
             DATEDIFF(YEAR, b.first_employee_date, b.start_date)
             - CASE
@@ -278,15 +274,8 @@ function employeeResolutionCte(additionalWhere = "") {
         c.section_code,
         c.site_code,
         c.first_employee_date,
-        c.start_date AS round_start_date,
         c.service_year,
         c.rank_group_source,
-        CASE
-          WHEN c.first_employee_date IS NOT NULL
-            AND c.first_employee_date > c.start_date
-          THEN 1
-          ELSE 0
-        END AS is_start_after_round,
         CASE
           WHEN c.rank_group_source = 'RANK' THEN rank_map.rank_group_id
           ELSE tenure_map.rank_group_id
@@ -372,7 +361,26 @@ async function getEmployeeOptions() {
   const result = await pool.request().query(`
     SELECT TOP 3000
       CAST(p.PAYROLLNO AS varchar(20)) AS payroll_no,
-      ${ssbDb()}.dbo.GetUserFullName(p.PAYROLLNO) AS full_name,
+      NULLIF(
+        LTRIM(
+          RTRIM(
+            ISNULL(
+              ${ssbDb()}.dbo.GetSSBName(
+                p.FIRSTTHAINAME
+              ),
+              N''
+            )
+            + N' '
+            + ISNULL(
+                ${ssbDb()}.dbo.GetSSBName(
+                  p.LASTTHAINAME
+                ),
+                N''
+              )
+          )
+        ),
+        N''
+      ) AS full_name,
       NULLIF(LTRIM(RTRIM(CAST(p.POSITIONCODE AS varchar(20)))), '') AS position_code,
       pv.PositionName AS position_name,
       ${ssbDb()}.dbo.GetSSBName(ISNULL(site.thainame, site.englishname)) AS site_name
@@ -390,7 +398,7 @@ async function getEmployeeOptions() {
         WHERE x.active_status = 1
           AND LTRIM(RTRIM(CAST(x.section_code AS varchar(20)))) = LTRIM(RTRIM(CAST(p.[SECTION] AS varchar(20))))
       )
-    ORDER BY ${ssbDb()}.dbo.GetUserFullName(p.PAYROLLNO);
+    ORDER BY full_name, p.PAYROLLNO;
   `);
   return result.recordset as EmployeeOptionRow[];
 }
@@ -422,7 +430,7 @@ function buildRoundEmployeeWhereClause(state: RoundEmployeesTableState) {
     whereParts.push(`
       (
         re.payroll_no LIKE @search_like
-        OR ${ssbDb()}.dbo.GetUserFullName(re.payroll_no) LIKE @search_like
+        OR employee_name.full_name LIKE @search_like
         OR ISNULL(pv.PositionName, '') LIKE @search_like
         OR ISNULL(re.position_code, '') LIKE @search_like
         OR ISNULL(${ssbDb()}.dbo.GetSSBName(rs.thainame), '') LIKE @search_like
@@ -493,6 +501,55 @@ async function getRoundEmployeesPage(state: RoundEmployeesTableState) {
     LEFT JOIN ${ssbDb()}.dbo.SYSCONFIG ss
       ON ss.CODE = re.site_code
      AND ss.CTRLCODE = '60048'
+    OUTER APPLY
+    (
+      SELECT TOP (1)
+        NULLIF(
+          LTRIM(
+            RTRIM(
+              ISNULL(
+                ${ssbDb()}.dbo.GetSSBName(
+                  employee_pyrext.FIRSTTHAINAME
+                ),
+                N''
+              )
+              + N' '
+              + ISNULL(
+                  ${ssbDb()}.dbo.GetSSBName(
+                    employee_pyrext.LASTTHAINAME
+                  ),
+                  N''
+                )
+            )
+          ),
+          N''
+        )
+          AS full_name
+      FROM ${ssbDb()}.dbo.PYREXT employee_pyrext
+      WHERE LTRIM(
+              RTRIM(
+                CAST(
+                  employee_pyrext.PAYROLLNO
+                  AS varchar(20)
+                )
+              )
+            )
+          =
+            LTRIM(
+              RTRIM(
+                CAST(
+                  re.payroll_no
+                  AS varchar(20)
+                )
+              )
+            )
+      ORDER BY
+        CASE
+          WHEN employee_pyrext.TERMINATEDATE IS NULL
+          THEN 0
+          ELSE 1
+        END
+    ) employee_name
     WHERE ${whereClause}
   `;
 
@@ -518,7 +575,7 @@ async function getRoundEmployeesPage(state: RoundEmployeesTableState) {
       r.round_code,
       r.status_type AS round_status_type,
       re.payroll_no,
-      ${ssbDb()}.dbo.GetUserFullName(re.payroll_no) AS employee_full_name,
+      employee_name.full_name AS employee_full_name,
       re.position_code,
       pv.PositionName AS position_name,
       re.rank_code,
@@ -596,21 +653,9 @@ function validateEmployeeSnapshot(employee: EmployeeSnapshotRow) {
   }
   if (
     employee.rank_group_source === "TENURE" &&
-    employee.first_employee_date === null
+    (employee.first_employee_date === null || employee.service_year === null)
   ) {
-    return "ไม่พบวันที่เริ่มปฏิบัติงานของเจ้าหน้าที่คนนี้";
-  }
-  if (
-    employee.rank_group_source === "TENURE" &&
-    Number(employee.is_start_after_round || 0) === 1
-  ) {
-    return "เจ้าหน้าที่คนนี้เริ่มปฏิบัติงานหลังวันเริ่มรอบ จึงยังไม่สามารถนำเข้ารอบนี้ได้";
-  }
-  if (
-    employee.rank_group_source === "TENURE" &&
-    employee.service_year === null
-  ) {
-    return "ไม่สามารถคำนวณอายุงาน ณ วันเริ่มรอบของเจ้าหน้าที่คนนี้ได้";
+    return "ไม่พบวันที่เริ่มปฏิบัติงานที่สามารถใช้คำนวณกลุ่มระดับได้";
   }
   if (!employee.rank_group_id) {
     return employee.rank_group_source === "RANK"
@@ -643,13 +688,7 @@ async function importEmployees(
         WHEN r.position_code IS NULL THEN 'MISSING_POSITION'
         WHEN r.division_code IS NULL THEN 'MISSING_DIVISION'
         WHEN r.rank_group_source = 'TENURE'
-          AND r.first_employee_date IS NULL
-          THEN 'MISSING_START_DATE'
-        WHEN r.rank_group_source = 'TENURE'
-          AND r.is_start_after_round = 1
-          THEN 'START_AFTER_ROUND'
-        WHEN r.rank_group_source = 'TENURE'
-          AND r.service_year IS NULL
+          AND (r.first_employee_date IS NULL OR r.service_year IS NULL)
           THEN 'MISSING_START_DATE'
         WHEN r.rank_group_id IS NULL THEN 'MISSING_RANK_GROUP'
         ELSE 'READY'
@@ -708,7 +747,6 @@ async function importEmployees(
       SUM(CASE WHEN issue_code = 'MISSING_POSITION' THEN 1 ELSE 0 END) AS skipped_missing_position,
       SUM(CASE WHEN issue_code = 'MISSING_DIVISION' THEN 1 ELSE 0 END) AS skipped_missing_division,
       SUM(CASE WHEN issue_code = 'MISSING_START_DATE' THEN 1 ELSE 0 END) AS skipped_missing_start_date,
-      SUM(CASE WHEN issue_code = 'START_AFTER_ROUND' THEN 1 ELSE 0 END) AS skipped_start_after_round,
       SUM(CASE WHEN issue_code = 'MISSING_RANK_GROUP' THEN 1 ELSE 0 END) AS skipped_missing_rank_group
     FROM #resolved_employee;
 
@@ -722,7 +760,6 @@ async function importEmployees(
     skipped_missing_position: Number(row.skipped_missing_position || 0),
     skipped_missing_division: Number(row.skipped_missing_division || 0),
     skipped_missing_start_date: Number(row.skipped_missing_start_date || 0),
-    skipped_start_after_round: Number(row.skipped_start_after_round || 0),
     skipped_missing_rank_group: Number(row.skipped_missing_rank_group || 0),
   };
 }
@@ -739,12 +776,7 @@ function buildImportMessage(summary: ImportSummaryRow) {
   }
   if (summary.skipped_missing_start_date > 0) {
     reasons.push(
-      `ไม่พบวันที่เริ่มปฏิบัติงาน ${summary.skipped_missing_start_date} คน`,
-    );
-  }
-  if (summary.skipped_start_after_round > 0) {
-    reasons.push(
-      `เริ่มปฏิบัติงานหลังวันเริ่มรอบ ${summary.skipped_start_after_round} คน`,
+      `ไม่มีวันที่เริ่มปฏิบัติงาน ${summary.skipped_missing_start_date} คน`,
     );
   }
   if (summary.skipped_missing_rank_group > 0) {

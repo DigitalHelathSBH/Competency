@@ -42,7 +42,7 @@ const BrandLogo = ({ compact = false }: { compact?: boolean }) => (
     {!compact && (
       <span className="min-w-0">
         <span className="block truncate text-lg font-semibold leading-5 text-gray-900 dark:text-white">
-          Competency
+          Performance
         </span>
         <span className="mt-0.5 block truncate text-xs text-gray-500 dark:text-gray-400">
           Assessment
@@ -136,6 +136,70 @@ const ReportIcon = (props: IconProps) => (
 );
 
 
+
+const KpiIcon = (props: IconProps) => (
+  <IconBase {...props}>
+    <circle
+      cx="12"
+      cy="12"
+      r="8.25"
+      stroke="currentColor"
+      strokeWidth="1.6"
+    />
+    <circle
+      cx="12"
+      cy="12"
+      r="4.5"
+      stroke="currentColor"
+      strokeWidth="1.6"
+    />
+    <circle cx="12" cy="12" r="1.5" fill="currentColor" />
+    <path
+      d="m14.75 9.25 4.2-4.2M16.2 5.05h2.75V7.8"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </IconBase>
+);
+
+const CombinedReportIcon = (props: IconProps) => (
+  <IconBase {...props}>
+    <path
+      d="M5 19.25h14"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+    />
+    <rect
+      x="6"
+      y="10"
+      width="3"
+      height="7.25"
+      rx="1"
+      stroke="currentColor"
+      strokeWidth="1.6"
+    />
+    <rect
+      x="10.5"
+      y="6.5"
+      width="3"
+      height="10.75"
+      rx="1"
+      stroke="currentColor"
+      strokeWidth="1.6"
+    />
+    <path
+      d="m15.25 10.5 1.55 1.55 2.7-3.05"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </IconBase>
+);
+
 type NavItem = {
   name: string;
   path: string;
@@ -171,14 +235,37 @@ function apiPath(path: string) {
 
 const mainItems: Array<NavItem & { icon: React.ReactNode }> = [
   { icon: <DashboardIcon />, name: "หน้าหลัก", path: "/dashboard" },
-  { icon: <EvaluateIcon />, name: "รายการประเมิน", path: "/evaluations" },
+  {
+    icon: <EvaluateIcon />,
+    name: "ประเมิน Competency",
+    path: "/evaluations",
+  },
+  {
+    icon: <KpiIcon />,
+    name: "ประเมิน KPI",
+    path: "/kpi-evaluations",
+  },
 ];
 
-const evaluatorReportItem: NavItem & { icon: React.ReactNode } = {
-  icon: <ReportIcon />,
-  name: "รายงานผล",
-  path: "/reports",
-};
+const evaluatorReportItems: Array<
+  NavItem & { icon: React.ReactNode }
+> = [
+  {
+    icon: <ReportIcon />,
+    name: "ผล Competency",
+    path: "/reports",
+  },
+  {
+    icon: <KpiIcon />,
+    name: "ผล KPI",
+    path: "/kpi-reports",
+  },
+  {
+    icon: <CombinedReportIcon />,
+    name: "ผลรวมการประเมิน",
+    path: "/performance-reports",
+  },
+];
 
 const adminGroups: NavGroup[] = [
   {
@@ -200,12 +287,32 @@ const adminGroups: NavGroup[] = [
     ],
   },
   {
-    name: "ตั้งค่าการประเมิน",
+    name: "ตั้งค่า Competency",
     icon: <QuestionIcon />,
     items: [
       { name: "หัวข้อประเมิน", path: "/admin/questions" },
-      { name: "หัวข้อประเมินตามวิชาชีพ", path: "/admin/profession-questions" },
-      { name: "น้ำหนักผู้ประเมิน", path: "/admin/evaluator-weights" },
+      {
+        name: "หัวข้อประเมินตามวิชาชีพ",
+        path: "/admin/profession-questions",
+      },
+      {
+        name: "น้ำหนักผู้ประเมิน",
+        path: "/admin/evaluator-weights",
+      },
+    ],
+  },
+  {
+    name: "ตั้งค่า KPI",
+    icon: <KpiIcon />,
+    items: [
+      {
+        name: "หัวข้อตัวชี้วัด",
+        path: "/admin/kpi-indicators",
+      },
+      {
+        name: "แบบฟอร์ม KPI",
+        path: "/admin/kpi-forms",
+      },
     ],
   },
   {
@@ -213,18 +320,51 @@ const adminGroups: NavGroup[] = [
     icon: <EmployeeIcon />,
     items: [
       { name: "กลุ่มระดับ", path: "/admin/rank-groups" },
-      { name: "ระดับข้าราชการ", path: "/admin/rank-group-maps" },
-      { name: "ช่วงอายุงาน", path: "/admin/tenure-rank-groups" },
-      { name: "เปอร์เซ็นต์ Competency", path: "/admin/site-percents" },
-      { name: "หน่วยเบิกที่ไม่ประเมิน", path: "/admin/section-exclusions" },
-      { name: "ผู้ถูกประเมิน", path: "/admin/round-employees" },
-      { name: "กำหนดผู้ประเมิน", path: "/admin/assignments" },
+      {
+        name: "ระดับข้าราชการ",
+        path: "/admin/rank-group-maps",
+      },
+      {
+        name: "ช่วงอายุงาน",
+        path: "/admin/tenure-rank-groups",
+      },
+      {
+        name: "เปอร์เซ็นต์ Competency",
+        path: "/admin/site-percents",
+      },
+      {
+        name: "หน่วยเบิกที่ไม่ประเมิน",
+        path: "/admin/section-exclusions",
+      },
+      {
+        name: "ผู้ถูกประเมิน",
+        path: "/admin/round-employees",
+      },
+      {
+        name: "ผู้ประเมิน Competency",
+        path: "/admin/assignments",
+      },
+      {
+        name: "กำหนดแบบฟอร์ม KPI",
+        path: "/admin/kpi-employee-forms",
+      },
+      {
+        name: "ผู้ประเมิน KPI",
+        path: "/admin/kpi-assignments",
+      },
     ],
   },
   {
     name: "รายงาน",
     icon: <ReportIcon />,
-    items: [{ name: "รายงานผล", path: "/reports" }],
+    items: [
+      { name: "ผล Competency", path: "/reports" },
+      { name: "ผล KPI", path: "/kpi-reports" },
+      {
+        name: "ผลรวมการประเมิน",
+        path: "/performance-reports",
+      },
+    ],
   },
 ];
 
@@ -283,7 +423,10 @@ const AppSidebar: React.FC = () => {
   const showText = isExpanded || isHovered || isMobileOpen;
 
   const visibleMainItems = useMemo(() => {
-    if (user && !user.is_admin) return [...mainItems, evaluatorReportItem];
+    if (user && !user.is_admin) {
+      return [...mainItems, ...evaluatorReportItems];
+    }
+
     return mainItems;
   }, [user]);
 
@@ -445,7 +588,7 @@ const AppSidebar: React.FC = () => {
       <div
         className={`flex py-8 ${!isExpanded && !isHovered ? "lg:justify-center" : "justify-start"}`}
       >
-        <Link href="/dashboard" aria-label="Competency Assessment">
+        <Link href="/dashboard" aria-label="Performance Assessment">
           <BrandLogo compact={!(isExpanded || isHovered || isMobileOpen)} />
         </Link>
       </div>

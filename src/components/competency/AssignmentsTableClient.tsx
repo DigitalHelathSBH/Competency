@@ -26,6 +26,7 @@ type AssignmentTableRow = {
   round_id: number;
   round_code: string;
   round_status_type: number;
+  row_assignment_status_type: number;
   employee_payroll_no: string;
   employee_full_name: string;
   employee_division_code: string | null;
@@ -40,6 +41,12 @@ type AssignmentTableRow = {
   level2_evaluation_status_type: number | null;
   evaluator_required_type: number;
   has_cancelled_assignment: number;
+  cancelled_level1_assignment_id: number | null;
+  cancelled_level1_evaluator_payroll_no: string | null;
+  cancelled_level1_evaluator_full_name: string | null;
+  cancelled_level2_assignment_id: number | null;
+  cancelled_level2_evaluator_payroll_no: string | null;
+  cancelled_level2_evaluator_full_name: string | null;
 };
 
 type AssignmentTablePayload = {
@@ -71,6 +78,10 @@ type AssignmentsTableClientProps = {
     roundEmployeeId: number,
     state: AssignmentTableState,
   ) => Promise<AssignmentTableActionResult>;
+  reactivateAssignmentAction: (
+    assignmentId: number,
+    state: AssignmentTableState,
+  ) => Promise<AssignmentTableActionResult>;
   selectAssignmentForEditAction: (formData: FormData) => void | Promise<void>;
 };
 
@@ -86,6 +97,9 @@ const DEFAULT_TABLE_STATE: AssignmentTableState = {
 
 const redActionButtonClass =
   "rounded-lg border border-[#ed5565] bg-[#ed5565] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#e64253]";
+
+const greenActionButtonClass =
+  "rounded-lg border border-[#1ab394] bg-[#1ab394] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#18a689]";
 
 const lockedButtonClass =
   "rounded-lg border border-gray-300 bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400";
@@ -114,6 +128,7 @@ export default function AssignmentsTableClient({
   loadTableAction,
   toggleEvaluatorRequiredTypeAction,
   cancelEmployeeAssignmentsAction,
+  reactivateAssignmentAction,
   selectAssignmentForEditAction,
 }: AssignmentsTableClientProps) {
   const [rows, setRows] = useState(initialRows);
@@ -152,10 +167,38 @@ export default function AssignmentsTableClient({
 
   function runLoad(nextState: AssignmentTableState, showLoadingOnly = false) {
     startTransition(async () => {
-      const result = await loadTableAction(nextState);
-      applyPayload(result.table);
-      if (!showLoadingOnly && result.message) {
-        showAlert(result.type, result.message);
+      try {
+        /*
+          ล้างรายการเดิมก่อนค้นหา เพื่อไม่ให้ผู้ใช้เห็นข้อมูลเก่า
+          ระหว่างรอผลจาก Server
+        */
+        setRows([]);
+        setTotalRows(0);
+
+        const result =
+          await loadTableAction(nextState);
+
+        applyPayload(result.table);
+
+        if (
+          !showLoadingOnly &&
+          result.message
+        ) {
+          showAlert(
+            result.type,
+            result.message,
+          );
+        }
+      } catch (error) {
+        setRows([]);
+        setTotalRows(0);
+        setTableState(nextState);
+        showAlert(
+          "error",
+          error instanceof Error
+            ? error.message
+            : "ไม่สามารถโหลดรายการผู้ประเมินได้",
+        );
       }
     });
   }
@@ -203,6 +246,24 @@ export default function AssignmentsTableClient({
     setCancelTarget(row);
   }
 
+  function handleReactivateAssignment(
+    assignmentId: number,
+  ) {
+    startTransition(async () => {
+      const result =
+        await reactivateAssignmentAction(
+          assignmentId,
+          tableState,
+        );
+
+      applyPayload(result.table);
+      showAlert(
+        result.type,
+        result.message,
+      );
+    });
+  }
+
   function confirmCancelAssignments() {
     if (!cancelTarget) return;
 
@@ -221,20 +282,56 @@ export default function AssignmentsTableClient({
     evaluatorName: string | null,
     roundStatusType: number,
     colorClassName: string,
+    isCancelled = false,
   ) {
-    if (!assignmentId || !evaluatorName) {
-      return <span className="text-xs text-gray-400 dark:text-gray-500">ยังไม่ได้กำหนด</span>;
+    if (
+      !assignmentId ||
+      !evaluatorName
+    ) {
+      return (
+        <span className="text-xs text-gray-400 dark:text-gray-500">
+          ยังไม่ได้กำหนด
+        </span>
+      );
     }
 
-    const nameClassName = `font-medium ${colorClassName}`;
+    if (isCancelled) {
+      return (
+        <div>
+          <div className="text-sm font-medium text-gray-500 line-through dark:text-gray-400">
+            {evaluatorName}
+          </div>
+          <span className="mt-1 inline-flex rounded-full bg-[#ed5565]/10 px-2 py-0.5 text-[11px] font-medium text-[#ed5565]">
+            ยกเลิก
+          </span>
+        </div>
+      );
+    }
+
+    const nameClassName =
+      `font-medium ${colorClassName}`;
 
     if (roundStatusType !== 0) {
-      return <div className={`${nameClassName} text-sm`}>{evaluatorName}</div>;
+      return (
+        <div
+          className={`${nameClassName} text-sm`}
+        >
+          {evaluatorName}
+        </div>
+      );
     }
 
     return (
-      <form action={selectAssignmentForEditAction}>
-        <input type="hidden" name="assignment_id" value={assignmentId} />
+      <form
+        action={
+          selectAssignmentForEditAction
+        }
+      >
+        <input
+          type="hidden"
+          name="assignment_id"
+          value={assignmentId}
+        />
         <button
           type="submit"
           className={`${nameClassName} text-left text-sm hover:underline`}
@@ -305,23 +402,136 @@ export default function AssignmentsTableClient({
     );
   }
 
-  function renderCancelActions(row: AssignmentTableRow) {
-    const activeAssignmentCount = Number(row.level1_assignment_id ? 1 : 0) + Number(row.level2_assignment_id ? 1 : 0);
+  function renderManagementActions(
+    row: AssignmentTableRow,
+  ) {
+    const isCancelledView =
+      Number(
+        row.row_assignment_status_type,
+      ) === 9;
 
-    if (activeAssignmentCount === 0) {
-      return <span className="text-xs text-gray-400 dark:text-gray-500">-</span>;
+    if (isCancelledView) {
+      const cancelledAssignments = [
+        row.cancelled_level1_assignment_id
+          ? {
+              assignmentId:
+                row.cancelled_level1_assignment_id,
+              label:
+                "เปิดหัวหน้าใกล้ชิด",
+            }
+          : null,
+
+        row.cancelled_level2_assignment_id
+          ? {
+              assignmentId:
+                row.cancelled_level2_assignment_id,
+              label:
+                "เปิดหัวหน้าใหญ่",
+            }
+          : null,
+      ].filter(
+        (
+          item,
+        ): item is {
+          assignmentId: number;
+          label: string;
+        } => item !== null,
+      );
+
+      if (
+        cancelledAssignments.length ===
+        0
+      ) {
+        return (
+          <span className="text-xs text-gray-400 dark:text-gray-500">
+            -
+          </span>
+        );
+      }
+
+      if (row.round_status_type !== 0) {
+        return (
+          <span
+            className={
+              lockedButtonClass
+            }
+          >
+            ล็อกแล้ว
+          </span>
+        );
+      }
+
+      return (
+        <div className="flex flex-col items-start gap-2">
+          {cancelledAssignments.map(
+            (item) => (
+              <button
+                key={
+                  item.assignmentId
+                }
+                type="button"
+                disabled={isPending}
+                onClick={() =>
+                  handleReactivateAssignment(
+                    item.assignmentId,
+                  )
+                }
+                className={
+                  greenActionButtonClass
+                }
+              >
+                {item.label}
+              </button>
+            ),
+          )}
+        </div>
+      );
+    }
+
+    const activeAssignmentCount =
+      Number(
+        row.level1_assignment_id
+          ? 1
+          : 0,
+      ) +
+      Number(
+        row.level2_assignment_id
+          ? 1
+          : 0,
+      );
+
+    if (
+      activeAssignmentCount === 0
+    ) {
+      return (
+        <span className="text-xs text-gray-400 dark:text-gray-500">
+          -
+        </span>
+      );
     }
 
     if (row.round_status_type !== 0) {
-      return <span className={lockedButtonClass}>ล็อกแล้ว</span>;
+      return (
+        <span
+          className={
+            lockedButtonClass
+          }
+        >
+          ล็อกแล้ว
+        </span>
+      );
     }
 
     return (
       <button
         type="button"
         disabled={isPending}
-        onClick={() => handleCancelAssignments(row)}
-        className={redActionButtonClass}
+        onClick={() =>
+          handleCancelAssignments(row)
+        }
+        className={
+          redActionButtonClass
+        }
       >
         ยกเลิก
       </button>
@@ -491,7 +701,7 @@ export default function AssignmentsTableClient({
             <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-800">
               <thead className="bg-gray-50 dark:bg-gray-900/40">
                 <tr>
-                  {["รอบ", "ผู้ถูกประเมิน", "หัวหน้าใกล้ชิด", "หัวหน้าใหญ่", "ประเมินแค่หัวหน้าใกล้ชิด", "ยกเลิก"].map((header) => (
+                  {["รอบ", "ผู้ถูกประเมิน", "หัวหน้าใกล้ชิด", "หัวหน้าใหญ่", "ประเมินแค่หัวหน้าใกล้ชิด", "สถานะ", "จัดการ"].map((header) => (
                     <th key={header} className="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
                       {header}
                     </th>
@@ -501,7 +711,7 @@ export default function AssignmentsTableClient({
               <tbody className="divide-y divide-gray-100 bg-white dark:divide-gray-800 dark:bg-transparent">
                 {rows.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+                    <td colSpan={7} className="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
                       ยังไม่มีข้อมูลผู้ประเมิน
                     </td>
                   </tr>
@@ -528,19 +738,41 @@ export default function AssignmentsTableClient({
 
                       <td className="px-5 py-4 align-top">
                         {renderEvaluatorCell(
-                          row.level1_assignment_id,
-                          row.level1_evaluator_full_name,
+                          Number(
+                            row.row_assignment_status_type,
+                          ) === 9
+                            ? row.cancelled_level1_assignment_id
+                            : row.level1_assignment_id,
+                          Number(
+                            row.row_assignment_status_type,
+                          ) === 9
+                            ? row.cancelled_level1_evaluator_full_name
+                            : row.level1_evaluator_full_name,
                           row.round_status_type,
                           "text-[#23c6c8]",
+                          Number(
+                            row.row_assignment_status_type,
+                          ) === 9,
                         )}
                       </td>
 
                       <td className="px-5 py-4 align-top">
                         {renderEvaluatorCell(
-                          row.level2_assignment_id,
-                          row.level2_evaluator_full_name,
+                          Number(
+                            row.row_assignment_status_type,
+                          ) === 9
+                            ? row.cancelled_level2_assignment_id
+                            : row.level2_assignment_id,
+                          Number(
+                            row.row_assignment_status_type,
+                          ) === 9
+                            ? row.cancelled_level2_evaluator_full_name
+                            : row.level2_evaluator_full_name,
                           row.round_status_type,
                           "text-[#f8ac59]",
+                          Number(
+                            row.row_assignment_status_type,
+                          ) === 9,
                         )}
                       </td>
 
@@ -548,8 +780,24 @@ export default function AssignmentsTableClient({
                         {renderEvaluatorRequiredType(row)}
                       </td>
 
+                      <td className="px-5 py-4 align-top text-sm">
+                        {Number(
+                          row.row_assignment_status_type,
+                        ) === 9 ? (
+                          <span className="inline-flex rounded-full bg-[#ed5565]/10 px-3 py-1 text-xs font-medium text-[#ed5565]">
+                            ยกเลิก
+                          </span>
+                        ) : (
+                          <span className="inline-flex rounded-full bg-[#1ab394]/10 px-3 py-1 text-xs font-medium text-[#1ab394]">
+                            ใช้งาน
+                          </span>
+                        )}
+                      </td>
+
                       <td className="px-5 py-4 align-top text-sm text-gray-700 dark:text-gray-300">
-                        {renderCancelActions(row)}
+                        {renderManagementActions(
+                          row,
+                        )}
                       </td>
                     </tr>
                   ))

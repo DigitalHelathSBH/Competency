@@ -105,7 +105,26 @@ async function getStaffOptions() {
       CAST(
         CASE
           WHEN p.PAYROLLNO IS NULL THEN e.EmpID
-          ELSE ${ssbDb()}.dbo.GetUserFullName(p.PAYROLLNO)
+          ELSE NULLIF(
+            LTRIM(
+              RTRIM(
+                ISNULL(
+                  ${ssbDb()}.dbo.GetSSBName(
+                    p.FIRSTTHAINAME
+                  ),
+                  N''
+                )
+                + N' '
+                + ISNULL(
+                    ${ssbDb()}.dbo.GetSSBName(
+                      p.LASTTHAINAME
+                    ),
+                    N''
+                  )
+              )
+            ),
+            N''
+          )
         END AS nvarchar(255)
       ) AS full_name,
       sc.ThaiName AS section_name
@@ -135,7 +154,26 @@ async function getAdminUsers() {
       CAST(
         CASE
           WHEN p.PAYROLLNO IS NULL THEN au.emp_id
-          ELSE ${ssbDb()}.dbo.GetUserFullName(p.PAYROLLNO)
+          ELSE NULLIF(
+            LTRIM(
+              RTRIM(
+                ISNULL(
+                  ${ssbDb()}.dbo.GetSSBName(
+                    p.FIRSTTHAINAME
+                  ),
+                  N''
+                )
+                + N' '
+                + ISNULL(
+                    ${ssbDb()}.dbo.GetSSBName(
+                      p.LASTTHAINAME
+                    ),
+                    N''
+                  )
+              )
+            ),
+            N''
+          )
         END AS nvarchar(255)
       ) AS full_name,
       sc.ThaiName AS section_name,

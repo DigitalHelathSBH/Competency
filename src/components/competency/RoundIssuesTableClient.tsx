@@ -16,9 +16,12 @@ type RoundRow = {
   round_year: number;
   round_no: number;
   status_type: number;
+  competency_status_type: number;
+  kpi_status_type: number;
 };
 
 type IssueRow = {
+  module_type: "COMPETENCY" | "KPI";
   issue_type: string;
   issue_level: IssueLevel;
   issue_title: string;
@@ -42,6 +45,7 @@ type IssueTableState = {
   page: number;
   pageSize: number;
   search: string;
+  module: string;
   level: string;
   type: string;
   menu: string;
@@ -69,6 +73,7 @@ type RoundIssuesTableClientProps = {
   initialState: IssueTableState;
   initialSelectedRound: RoundRow | null;
   roundOptions: SelectOption[];
+  moduleOptions: SelectOption[];
   levelOptions: SelectOption[];
   typeOptions: SelectOption[];
   menuOptions: SelectOption[];
@@ -82,6 +87,7 @@ const DEFAULT_TABLE_STATE: IssueTableState = {
   page: 1,
   pageSize: 25,
   search: "",
+  module: "",
   level: "",
   type: "",
   menu: "",
@@ -109,13 +115,15 @@ function getMenuLabel(path: string) {
     "/admin/round-issues": "รายการที่ต้องแก้ไข",
     "/admin/round-employees": "ผู้ถูกประเมิน",
     "/admin/rank-groups": "กลุ่มระดับ",
-    "/admin/rank-group-maps": "ระดับข้าราชการ",
-    "/admin/tenure-rank-groups": "ช่วงอายุงาน",
-    "/admin/site-percents": "เปอร์เซ็นต์ Competency",
     "/admin/assignments": "กำหนดผู้ประเมิน",
-    "/admin/evaluator-weights": "น้ำหนักผู้ประเมิน",
+    "/admin/evaluator-weights": "น้ำหนักคะแนน",
     "/admin/questions": "หัวข้อประเมิน",
-    "/admin/profession-questions": "หัวข้อประเมินตามวิชาชีพ",
+    "/admin/question-descriptions": "คำอธิบายหัวข้อ",
+    "/admin/site-percents": "เปอร์เซ็นต์ Competency",
+    "/admin/kpi-employee-forms": "กำหนดแบบฟอร์ม KPI",
+    "/admin/kpi-assignments": "กำหนดผู้ประเมิน KPI",
+    "/admin/kpi-forms": "แบบฟอร์ม KPI",
+    "/admin/kpi-indicators": "ตัวชี้วัด KPI",
   };
 
   return menuMap[path] || path;
@@ -137,10 +145,7 @@ function getFixSearchKeyword(issue: IssueRow) {
     return payrollNo;
   }
 
-  if (
-    issue.menu_path === "/admin/rank-groups" ||
-    issue.menu_path === "/admin/rank-group-maps"
-  ) {
+  if (issue.menu_path === "/admin/rank-groups") {
     return issue.reference_text.replace("rank_code:", "").trim();
   }
 
@@ -196,6 +201,7 @@ export default function RoundIssuesTableClient({
   initialState,
   initialSelectedRound,
   roundOptions,
+  moduleOptions,
   levelOptions,
   typeOptions,
   menuOptions,
@@ -207,15 +213,12 @@ export default function RoundIssuesTableClient({
   const [totalCount, setTotalCount] = useState(initialTotalCount);
   const [summary, setSummary] = useState(initialSummary);
   const [tableState, setTableState] = useState(initialState);
-  const [selectedRound, setSelectedRound] = useState<RoundRow | null>(
-    initialSelectedRound,
-  );
+  const [selectedRound, setSelectedRound] = useState<RoundRow | null>(initialSelectedRound);
   const [isPending, startTransition] = useTransition();
 
   const totalPages = Math.max(1, Math.ceil(totalCount / tableState.pageSize));
   const currentPage = normalizePage(tableState.page, totalPages);
-  const startItem =
-    totalCount === 0 ? 0 : (currentPage - 1) * tableState.pageSize + 1;
+  const startItem = totalCount === 0 ? 0 : (currentPage - 1) * tableState.pageSize + 1;
   const endItem = Math.min(currentPage * tableState.pageSize, totalCount);
   const isFirstPage = currentPage <= 1;
   const isLastPage = currentPage >= totalPages;
@@ -244,6 +247,7 @@ export default function RoundIssuesTableClient({
       page: 1,
       pageSize: Number(formData.get("page_size") || tableState.pageSize),
       search: String(formData.get("search") || ""),
+      module: String(formData.get("module") || ""),
       level: String(formData.get("level") || ""),
       type: String(formData.get("type") || ""),
       menu: String(formData.get("menu") || ""),
@@ -283,9 +287,16 @@ export default function RoundIssuesTableClient({
               รอบ {selectedRound?.round_code || "-"}
             </h2>
             <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              สถานะ:{" "}
-              {selectedRound ? roundStatusText(selectedRound.status_type) : "-"}
+              สถานะรอบ: {selectedRound ? roundStatusText(selectedRound.status_type) : "-"}
             </p>
+            <div className="mt-2 flex flex-wrap gap-2 text-xs">
+              <span className="rounded-full bg-brand-50 px-3 py-1 font-medium text-brand-600 dark:bg-brand-500/10 dark:text-brand-300">
+                Competency: {selectedRound ? roundStatusText(selectedRound.competency_status_type) : "-"}
+              </span>
+              <span className="rounded-full bg-[#23c6c8]/10 px-3 py-1 font-medium text-[#23c6c8]">
+                KPI: {selectedRound ? roundStatusText(selectedRound.kpi_status_type) : "-"}
+              </span>
+            </div>
           </div>
 
           {summary.total_count === 0 ? (
@@ -300,21 +311,9 @@ export default function RoundIssuesTableClient({
         </div>
 
         <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <SummaryCard
-            title="ทั้งหมด"
-            value={summary.total_count}
-            tone={summary.total_count === 0 ? "green" : "blue"}
-          />
-          <SummaryCard
-            title="ต้องแก้"
-            value={summary.error_count}
-            tone={summary.error_count === 0 ? "green" : "red"}
-          />
-          <SummaryCard
-            title="ควรตรวจ"
-            value={summary.warning_count}
-            tone={summary.warning_count === 0 ? "green" : "orange"}
-          />
+          <SummaryCard title="ทั้งหมด" value={summary.total_count} tone={summary.total_count === 0 ? "green" : "blue"} />
+          <SummaryCard title="ต้องแก้" value={summary.error_count} tone={summary.error_count === 0 ? "green" : "red"} />
+          <SummaryCard title="ควรตรวจ" value={summary.warning_count} tone={summary.warning_count === 0 ? "green" : "orange"} />
           <SummaryCard title="ข้อมูล" value={summary.info_count} tone="blue" />
         </div>
       </div>
@@ -325,15 +324,10 @@ export default function RoundIssuesTableClient({
         </h2>
 
         <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
-          <form
-            onSubmit={handleSearch}
-            className="border-b border-gray-100 p-4 dark:border-gray-800"
-          >
+          <form onSubmit={handleSearch} className="border-b border-gray-100 p-4 dark:border-gray-800">
             <div className="grid grid-cols-1 gap-3 xl:grid-cols-12">
-              <div className="xl:col-span-3">
-                <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
-                  ค้นหา
-                </label>
+              <div className="xl:col-span-2">
+                <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">ค้นหา</label>
                 <input
                   name="search"
                   defaultValue={tableState.search}
@@ -343,9 +337,7 @@ export default function RoundIssuesTableClient({
               </div>
 
               <div className="xl:col-span-2">
-                <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
-                  รอบประเมิน
-                </label>
+                <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">รอบประเมิน</label>
                 <SearchableSelect
                   key={`round-${tableState.roundId}`}
                   name="round_id"
@@ -356,9 +348,18 @@ export default function RoundIssuesTableClient({
               </div>
 
               <div className="xl:col-span-2">
-                <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
-                  ระดับ
-                </label>
+                <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">โมดูล</label>
+                <SearchableSelect
+                  key={`module-${tableState.module}`}
+                  name="module"
+                  defaultValue={tableState.module}
+                  placeholder="โมดูล: ทั้งหมด"
+                  options={moduleOptions}
+                />
+              </div>
+
+              <div className="xl:col-span-2">
+                <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">ระดับ</label>
                 <SearchableSelect
                   key={`level-${tableState.level}`}
                   name="level"
@@ -369,9 +370,7 @@ export default function RoundIssuesTableClient({
               </div>
 
               <div className="xl:col-span-2">
-                <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
-                  ประเภท
-                </label>
+                <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">ประเภท</label>
                 <SearchableSelect
                   key={`type-${tableState.type}`}
                   name="type"
@@ -381,10 +380,8 @@ export default function RoundIssuesTableClient({
                 />
               </div>
 
-              <div className="xl:col-span-2">
-                <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
-                  เมนูที่เกี่ยวข้อง
-                </label>
+              <div className="xl:col-span-1">
+                <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">เมนู</label>
                 <SearchableSelect
                   key={`menu-${tableState.menu}`}
                   name="menu"
@@ -395,18 +392,14 @@ export default function RoundIssuesTableClient({
               </div>
 
               <div className="xl:col-span-1">
-                <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
-                  แถว
-                </label>
+                <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">แถว</label>
                 <select
                   name="page_size"
                   defaultValue={tableState.pageSize}
                   className="h-11 w-full rounded-lg border border-gray-300 bg-transparent px-3 py-2.5 text-sm text-gray-800 outline-none focus:border-brand-500 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90"
                 >
                   {[10, 25, 50, 100].map((size) => (
-                    <option key={size} value={size}>
-                      {size}
-                    </option>
+                    <option key={size} value={size}>{size}</option>
                   ))}
                 </select>
               </div>
@@ -435,18 +428,8 @@ export default function RoundIssuesTableClient({
             <table className="min-w-full divide-y divide-gray-100 dark:divide-gray-800">
               <thead className="bg-gray-50 dark:bg-gray-900/40">
                 <tr>
-                  {[
-                    "ประเภท",
-                    "ระดับ",
-                    "รายการ",
-                    "รายละเอียด",
-                    "ข้อมูลเพิ่มเติม",
-                    "จัดการ",
-                  ].map((header) => (
-                    <th
-                      key={header}
-                      className="px-5 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400"
-                    >
+                  {["โมดูล", "ประเภท", "ระดับ", "รายการ", "รายละเอียด", "อ้างอิง", "เมนูที่เกี่ยวข้อง"].map((header) => (
+                    <th key={header} className="px-5 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400">
                       {header}
                     </th>
                   ))}
@@ -455,81 +438,52 @@ export default function RoundIssuesTableClient({
               <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
                 {rows.length === 0 ? (
                   <tr>
-                    <td
-                      colSpan={6}
-                      className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400"
-                    >
+                    <td colSpan={7} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
                       ไม่พบรายการที่ต้องแก้ไข
                     </td>
                   </tr>
                 ) : (
                   rows.map((issue, index) => (
-                    <tr
-                      key={`${issue.issue_type}-${issue.issue_title}-${issue.person_text}-${index}`}
-                      className="align-top"
-                    >
-                      <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
-                        {issue.issue_type}
-                      </td>
+                    <tr key={`${issue.module_type}-${issue.issue_type}-${issue.issue_title}-${issue.person_text}-${index}`} className="align-top">
                       <td className="px-5 py-4 text-sm">
-                        <span className={getIssueBadgeClass(issue.issue_level)}>
-                          {getIssueLevelText(issue.issue_level)}
+                        <span
+                          className={
+                            issue.module_type === "COMPETENCY"
+                              ? "inline-flex rounded-full bg-brand-50 px-2.5 py-1 text-xs font-medium text-brand-600 dark:bg-brand-500/10 dark:text-brand-300"
+                              : "inline-flex rounded-full bg-[#23c6c8]/10 px-2.5 py-1 text-xs font-medium text-[#23c6c8]"
+                          }
+                        >
+                          {issue.module_type === "COMPETENCY" ? "Competency" : "KPI"}
                         </span>
                       </td>
+                      <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">{issue.issue_type}</td>
+                      <td className="px-5 py-4 text-sm"><span className={getIssueBadgeClass(issue.issue_level)}>{getIssueLevelText(issue.issue_level)}</span></td>
                       <td className="px-5 py-4 text-sm font-medium text-gray-800 dark:text-white/90">
                         <div>{issue.issue_title}</div>
-                        <div className="mt-1 text-xs font-normal text-gray-500 dark:text-gray-400">
-                          {issue.person_text}
-                        </div>
+                        <div className="mt-1 text-xs font-normal text-gray-500 dark:text-gray-400">{issue.person_text}</div>
                       </td>
-                      <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
-                        {issue.detail_text}
-                      </td>
-                      <td className="px-5 py-4 text-sm text-gray-600 dark:text-gray-400">
-                        {issue.reference_text}
-                      </td>
+                      <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">{issue.detail_text}</td>
+                      <td className="px-5 py-4 text-sm text-gray-600 dark:text-gray-400">{issue.reference_text}</td>
                       <td className="px-5 py-4 text-sm">
-                        {issue.menu_path === "/admin/assignments" &&
-                        issue.fix_round_employee_id &&
-                        issue.fix_evaluator_level ? (
+                        {issue.menu_path === "/admin/assignments" && issue.fix_round_employee_id && issue.fix_evaluator_level ? (
                           <form action={openAssignmentPrefillAction}>
-                            <input
-                              type="hidden"
-                              name="round_employee_id"
-                              value={issue.fix_round_employee_id}
-                            />
-                            <input
-                              type="hidden"
-                              name="evaluator_level"
-                              value={issue.fix_evaluator_level}
-                            />
+                            <input type="hidden" name="round_employee_id" value={issue.fix_round_employee_id} />
+                            <input type="hidden" name="evaluator_level" value={issue.fix_evaluator_level} />
                             <button
                               type="submit"
-                              className="inline-flex items-center rounded-lg bg-[#1c84c6] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#1a7bb8]"
+                              className="inline-flex items-center rounded-lg border border-[#1ab394] px-3 py-1.5 text-xs font-medium text-[#1ab394] hover:bg-[#1ab394]/10"
                             >
                               ไปเพิ่มผู้ประเมิน
                             </button>
                           </form>
                         ) : (
                           <form action={openGenericFixMenuAction}>
-                            <input
-                              type="hidden"
-                              name="menu_path"
-                              value={issue.menu_path}
-                            />
-                            <input
-                              type="hidden"
-                              name="round_id"
-                              value={tableState.roundId}
-                            />
-                            <input
-                              type="hidden"
-                              name="search_keyword"
-                              value={getFixSearchKeyword(issue)}
-                            />
+                            <input type="hidden" name="menu_path" value={issue.menu_path} />
+                            <input type="hidden" name="round_id" value={tableState.roundId} />
+                            <input type="hidden" name="search_keyword" value={getFixSearchKeyword(issue)} />
                             <button
                               type="submit"
-                              className="inline-flex items-center rounded-lg bg-[#1c84c6] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#1a7bb8]"
+                              className="inline-flex items-center rounded-lg border border-brand-500 px-3 py-1.5 text-xs font-medium text-brand-600 hover:bg-brand-50 dark:border-brand-400 dark:text-brand-300 dark:hover:bg-brand-500/10"
                             >
                               ไปที่เมนู {getMenuLabel(issue.menu_path)}
                             </button>
@@ -546,32 +500,14 @@ export default function RoundIssuesTableClient({
           <div className="px-5 pb-4">
             <div className="mt-5 flex flex-col gap-3 border-t border-gray-100 pt-4 dark:border-gray-800 lg:flex-row lg:items-center lg:justify-between">
               <div className="text-sm text-gray-600 dark:text-gray-400">
-                แสดง {startItem.toLocaleString()}-{endItem.toLocaleString()} จาก{" "}
-                {totalCount.toLocaleString()} รายการ
+                แสดง {startItem.toLocaleString()}-{endItem.toLocaleString()} จาก {totalCount.toLocaleString()} รายการ
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => handlePageChange(1)}
-                  disabled={isFirstPage || isPending}
-                  className={paginationButtonClass}
-                >
-                  หน้าแรก
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handlePageChange(currentPage - 1)}
-                  disabled={isFirstPage || isPending}
-                  className={paginationButtonClass}
-                >
-                  ก่อนหน้า
-                </button>
+                <button type="button" onClick={() => handlePageChange(1)} disabled={isFirstPage || isPending} className={paginationButtonClass}>หน้าแรก</button>
+                <button type="button" onClick={() => handlePageChange(currentPage - 1)} disabled={isFirstPage || isPending} className={paginationButtonClass}>ก่อนหน้า</button>
 
-                <form
-                  onSubmit={handlePageInput}
-                  className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400"
-                >
+                <form onSubmit={handlePageInput} className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
                   <span>หน้า</span>
                   <input
                     name="page"
@@ -582,31 +518,11 @@ export default function RoundIssuesTableClient({
                     className="h-10 w-20 rounded-lg border border-gray-300 bg-transparent px-3 text-center text-sm text-gray-800 outline-none focus:border-brand-500 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90"
                   />
                   <span>จาก {totalPages.toLocaleString()}</span>
-                  <button
-                    type="submit"
-                    disabled={isPending}
-                    className={paginationButtonClass}
-                  >
-                    ไป
-                  </button>
+                  <button type="submit" disabled={isPending} className={paginationButtonClass}>ไป</button>
                 </form>
 
-                <button
-                  type="button"
-                  onClick={() => handlePageChange(currentPage + 1)}
-                  disabled={isLastPage || isPending}
-                  className={paginationButtonClass}
-                >
-                  ถัดไป
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handlePageChange(totalPages)}
-                  disabled={isLastPage || isPending}
-                  className={paginationButtonClass}
-                >
-                  หน้าสุดท้าย
-                </button>
+                <button type="button" onClick={() => handlePageChange(currentPage + 1)} disabled={isLastPage || isPending} className={paginationButtonClass}>ถัดไป</button>
+                <button type="button" onClick={() => handlePageChange(totalPages)} disabled={isLastPage || isPending} className={paginationButtonClass}>หน้าสุดท้าย</button>
               </div>
             </div>
           </div>

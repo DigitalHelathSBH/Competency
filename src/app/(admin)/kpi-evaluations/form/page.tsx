@@ -146,9 +146,8 @@ async function getKpiEvaluationFormData(
             )
           )
         ) AS employee_payroll_no,
-        ${ssbDb()}.dbo.GetUserFullName(
-          re.payroll_no
-        ) AS employee_full_name,
+        employee_name.full_name
+          AS employee_full_name,
         ISNULL(
           ${ssbDb()}.dbo.GetSSBName(
             ISNULL(
@@ -226,6 +225,55 @@ async function getKpiEvaluationFormData(
                )
              )
            )
+      OUTER APPLY
+    (
+      SELECT TOP (1)
+        NULLIF(
+          LTRIM(
+            RTRIM(
+              ISNULL(
+                ${ssbDb()}.dbo.GetSSBName(
+                  employee_pyrext.FIRSTTHAINAME
+                ),
+                N''
+              )
+              + N' '
+              + ISNULL(
+                  ${ssbDb()}.dbo.GetSSBName(
+                    employee_pyrext.LASTTHAINAME
+                  ),
+                  N''
+                )
+            )
+          ),
+          N''
+        )
+          AS full_name
+      FROM ${ssbDb()}.dbo.PYREXT employee_pyrext
+      WHERE LTRIM(
+              RTRIM(
+                CAST(
+                  employee_pyrext.PAYROLLNO
+                  AS varchar(20)
+                )
+              )
+            )
+          =
+            LTRIM(
+              RTRIM(
+                CAST(
+                  re.payroll_no
+                  AS varchar(20)
+                )
+              )
+            )
+      ORDER BY
+        CASE
+          WHEN employee_pyrext.TERMINATEDATE IS NULL
+          THEN 0
+          ELSE 1
+        END
+    ) employee_name
       OUTER APPLY
       (
         SELECT TOP (1)

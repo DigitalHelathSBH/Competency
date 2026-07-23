@@ -47,6 +47,12 @@ type EvaluatorOptionRow = {
   division_name: string | null;
 };
 
+type EvaluatorRankSnapshot = {
+  payroll_no: string;
+  rank_group_id: number;
+  evaluator_rank_order: number;
+};
+
 type AssignmentsPageProps = {
   searchParams?: Promise<{
     alert_type?: string;
@@ -87,6 +93,7 @@ type AssignmentTableRow = {
   round_id: number;
   round_code: string;
   round_status_type: number;
+  row_assignment_status_type: number;
   employee_payroll_no: string;
   employee_full_name: string;
   employee_division_code: string | null;
@@ -101,6 +108,12 @@ type AssignmentTableRow = {
   level2_evaluation_status_type: number | null;
   evaluator_required_type: number;
   has_cancelled_assignment: number;
+  cancelled_level1_assignment_id: number | null;
+  cancelled_level1_evaluator_payroll_no: string | null;
+  cancelled_level1_evaluator_full_name: string | null;
+  cancelled_level2_assignment_id: number | null;
+  cancelled_level2_evaluator_payroll_no: string | null;
+  cancelled_level2_evaluator_full_name: string | null;
 };
 
 type AssignmentTablePageResult = {
@@ -294,9 +307,168 @@ function roundStatusText(statusType: number) {
   return `สถานะ ${statusType}`;
 }
 
+async function updateEvaluatorRequiredTypeSafely(
+  roundEmployeeId: number,
+  nextType: number,
+  changedBy: string,
+) {
+  const pool = await getDbPool();
+  const transaction = new sql.Transaction(pool);
+  let normalizedAssignmentId = 0;
+
+  try {
+    await transaction.begin();
+
+    const employeeResult = await new sql.Request(transaction)
+      .input("round_employee_id", sql.Int, roundEmployeeId)
+      .query(`
+        SELECT TOP (1)
+          re.round_employee_id,
+          ISNULL(re.evaluator_required_type, 2) AS evaluator_required_type,
+          r.status_type AS round_status_type
+        FROM dbo.competency_round_employee re WITH (UPDLOCK, HOLDLOCK)
+        JOIN dbo.competency_round r
+          ON r.round_id = re.round_id
+        WHERE re.round_employee_id = @round_employee_id
+          AND re.status_type <> 9;
+      `);
+
+    const employee = employeeResult.recordset[0] as
+      | {
+          round_status_type: number;
+          evaluator_required_type: number;
+        }
+      | undefined;
+
+    if (!employee) {
+      throw new Error("ไม่พบผู้ถูกประเมินในรอบ");
+    }
+
+    if (Number(employee.round_status_type) !== 0) {
+      throw new Error("แก้ไขได้เฉพาะรอบสถานะร่างเท่านั้น");
+    }
+
+    if (nextType === 1) {
+      const assignmentResult = await new sql.Request(transaction)
+        .input("round_employee_id", sql.Int, roundEmployeeId)
+        .query(`
+          SELECT
+            a.assignment_id,
+            a.evaluator_level,
+            latest_evaluation.evaluation_id
+          FROM dbo.competency_evaluator_assignment a WITH (UPDLOCK, HOLDLOCK)
+          OUTER APPLY
+          (
+            SELECT TOP (1)
+              ev.evaluation_id
+            FROM dbo.competency_evaluation ev
+            WHERE ev.assignment_id = a.assignment_id
+            ORDER BY ev.evaluation_id DESC
+          ) latest_evaluation
+          WHERE a.round_employee_id = @round_employee_id
+            AND a.status_type <> 9
+          ORDER BY a.evaluator_level, a.assignment_id;
+        `);
+
+      const activeAssignments = assignmentResult.recordset as Array<{
+        assignment_id: number;
+        evaluator_level: number;
+        evaluation_id: number | null;
+      }>;
+
+      const closeAssignments = activeAssignments.filter(
+        (item) => Number(item.evaluator_level) === 1,
+      );
+      const bigAssignments = activeAssignments.filter(
+        (item) => Number(item.evaluator_level) === 2,
+      );
+
+      if (closeAssignments.length > 1 || bigAssignments.length > 1) {
+        throw new Error(
+          "พบผู้ประเมินระดับเดียวกันซ้ำ กรุณาตรวจสอบรายการก่อนเปิดการประเมินคนเดียว",
+        );
+      }
+
+      if (closeAssignments.length > 0 && bigAssignments.length > 0) {
+        throw new Error(
+          "ยังมีทั้งหัวหน้าใกล้ชิดและหัวหน้าใหญ่ กรุณายกเลิกรายการที่ไม่ใช้ก่อนเปิดการประเมินคนเดียว",
+        );
+      }
+
+      if (closeAssignments.length === 0 && bigAssignments.length === 1) {
+        const bigAssignment = bigAssignments[0];
+
+        if (bigAssignment.evaluation_id) {
+          throw new Error(
+            "รายการหัวหน้าใหญ่เริ่มมีข้อมูลประเมินแล้ว จึงไม่สามารถเปลี่ยนระดับอัตโนมัติได้",
+          );
+        }
+
+        await new sql.Request(transaction)
+          .input("assignment_id", sql.Int, bigAssignment.assignment_id)
+          .query(`
+            UPDATE dbo.competency_evaluator_assignment
+            SET evaluator_level = 1
+            WHERE assignment_id = @assignment_id
+              AND evaluator_level = 2
+              AND status_type <> 9;
+          `);
+
+        normalizedAssignmentId = Number(bigAssignment.assignment_id);
+      }
+    }
+
+    await new sql.Request(transaction)
+      .input("round_employee_id", sql.Int, roundEmployeeId)
+      .input("next_type", sql.TinyInt, nextType)
+      .query(`
+        UPDATE dbo.competency_round_employee
+        SET evaluator_required_type = @next_type
+        WHERE round_employee_id = @round_employee_id
+          AND status_type <> 9;
+      `);
+
+    await transaction.commit();
+  } catch (error) {
+    try {
+      await transaction.rollback();
+    } catch {
+      // ignore rollback error
+    }
+    throw error;
+  }
+
+  if (normalizedAssignmentId > 0) {
+    try {
+      await pool
+        .request()
+        .input("round_employee_id", sql.Int, roundEmployeeId)
+        .input("changed_by", sql.VarChar(20), changedBy)
+        .query(`
+          IF OBJECT_ID(
+               N'dbo.sp_kpi_sync_evaluator_from_competency',
+               N'P'
+             ) IS NOT NULL
+          BEGIN
+            EXEC dbo.sp_kpi_sync_evaluator_from_competency
+                 @round_employee_id = @round_employee_id,
+                 @changed_by = @changed_by;
+          END;
+        `);
+    } catch (error) {
+      console.error("KPI evaluator sync failed:", error);
+    }
+  }
+
+  return {
+    normalizedAssignment: normalizedAssignmentId > 0,
+  };
+}
+
 async function setEvaluatorRequiredType(formData: FormData) {
   "use server";
 
+  const session = await requireAdminSession();
   const roundEmployeeId = Number(formData.get("round_employee_id") || 0);
   const evaluatorRequiredType = Number(
     formData.get("evaluator_required_type") || 2,
@@ -306,48 +478,34 @@ async function setEvaluatorRequiredType(formData: FormData) {
     redirectWithAlert("warning", "ข้อมูลไม่ถูกต้อง");
   }
 
-  const pool = await getDbPool();
+  try {
+    const result = await updateEvaluatorRequiredTypeSafely(
+      roundEmployeeId,
+      evaluatorRequiredType,
+      session.emp_id,
+    );
 
-  const checkResult = await pool
-    .request()
-    .input("round_employee_id", sql.Int, roundEmployeeId).query(`
-      SELECT
-        re.round_employee_id,
-        r.status_type AS round_status
-      FROM dbo.competency_round_employee re
-      JOIN dbo.competency_round r
-        ON r.round_id = re.round_id
-      WHERE re.round_employee_id = @round_employee_id;
-    `);
+    revalidatePath("/admin/assignments");
+    revalidatePath("/admin/round-readiness");
+    revalidatePath("/admin/round-issues");
 
-  const row = checkResult.recordset[0];
-
-  if (!row) {
-    redirectWithAlert("warning", "ไม่พบข้อมูลผู้ถูกประเมิน");
+    redirectWithAlert(
+      "success",
+      evaluatorRequiredType === 1
+        ? result.normalizedAssignment
+          ? "ตั้งค่าใช้หัวหน้าใกล้ชิดคนเดียว 100% และปรับหัวหน้าใหญ่เดิมเป็นหัวหน้าใกล้ชิดเรียบร้อยแล้ว"
+          : "ตั้งค่าใช้หัวหน้าใกล้ชิดคนเดียว 100% เรียบร้อยแล้ว"
+        : "ตั้งค่าให้ต้องมีผู้ประเมิน 2 คนเรียบร้อยแล้ว",
+    );
+  } catch (error) {
+    console.error(error);
+    redirectWithAlert(
+      "warning",
+      error instanceof Error
+        ? error.message
+        : "ไม่สามารถเปลี่ยนรูปแบบผู้ประเมินได้",
+    );
   }
-
-  if (Number(row.round_status) !== 0) {
-    redirectWithAlert("warning", "แก้ไขได้เฉพาะรอบสถานะร่างเท่านั้น");
-  }
-
-  await pool
-    .request()
-    .input("round_employee_id", sql.Int, roundEmployeeId)
-    .input("evaluator_required_type", sql.TinyInt, evaluatorRequiredType)
-    .query(`
-      UPDATE dbo.competency_round_employee
-      SET evaluator_required_type = @evaluator_required_type
-      WHERE round_employee_id = @round_employee_id;
-    `);
-
-  revalidatePath("/admin/assignments");
-
-  redirectWithAlert(
-    "success",
-    evaluatorRequiredType === 1
-      ? "ตั้งค่าให้ประเมินแค่หัวหน้าใกล้ชิดเรียบร้อยแล้ว"
-      : "ตั้งค่าให้ต้องมีผู้ประเมิน 2 คนเรียบร้อยแล้ว",
-  );
 }
 
 const redActionButtonClass =
@@ -380,36 +538,106 @@ async function getRoundEmployeeOptions() {
       re.round_employee_id,
       re.round_id,
       re.payroll_no,
-      ${ssbDb()}.dbo.GetUserFullName(re.payroll_no) AS employee_full_name,
+
+      employee_name.full_name
+        AS employee_full_name,
+
       re.position_code,
       pv.PositionName AS position_name,
       re.rank_code,
-      ${ssbDb()}.dbo.GetSSBName(rs.thainame) AS rank_name,
+
+      ${ssbDb()}.dbo.GetSSBName(
+        rs.thainame
+      ) AS rank_name,
+
       rg.rank_group_name,
-      ISNULL(rg.sort_order, 0) AS rank_order,
+      ISNULL(
+        rg.sort_order,
+        0
+      ) AS rank_order,
+
       re.division_code,
-      ${ssbDb()}.dbo.GetSSBName(ISNULL(ds.thainame, ds.englishname)) AS division_name,
+
+      ${ssbDb()}.dbo.GetSSBName(
+        ISNULL(
+          ds.thainame,
+          ds.englishname
+        )
+      ) AS division_name,
+
       re.section_code,
-      sectioncode.ThaiName AS section_name
+      sectioncode.ThaiName
+        AS section_name
+
     FROM dbo.competency_round_employee re
+
     JOIN dbo.competency_round r
       ON r.round_id = re.round_id
      AND r.status_type = 0
+
     JOIN dbo.competency_rank_group rg
-      ON rg.rank_group_id = re.rank_group_id
+      ON rg.rank_group_id =
+         re.rank_group_id
      AND rg.active_status = 1
+
+    OUTER APPLY
+    (
+      SELECT TOP (1)
+        NULLIF(
+          LTRIM(
+            RTRIM(
+              ISNULL(
+                ${ssbDb()}.dbo.GetSSBName(
+                  p.FIRSTTHAINAME
+                ),
+                N''
+              )
+              + N' '
+              + ISNULL(
+                  ${ssbDb()}.dbo.GetSSBName(
+                    p.LASTTHAINAME
+                  ),
+                  N''
+                )
+            )
+          ),
+          N''
+        ) AS full_name
+      FROM ${ssbDb()}.dbo.PYREXT p
+      WHERE p.PAYROLLNO =
+            re.payroll_no
+      ORDER BY
+        CASE
+          WHEN p.TERMINATEDATE IS NULL
+          THEN 0
+          ELSE 1
+        END
+    ) employee_name
+
     LEFT JOIN ${ssbDb()}.dbo.PositionView pv
-      ON pv.PositionCode = re.position_code
+      ON pv.PositionCode =
+         re.position_code
+
     LEFT JOIN ${ssbDb()}.dbo.SYSCONFIG rs
       ON rs.CODE = re.rank_code
      AND rs.CTRLCODE = '60010'
+
     LEFT JOIN ${ssbDb()}.dbo.SYSCONFIG ds
       ON ds.CODE = re.division_code
      AND ds.CTRLCODE = '10028'
-    LEFT JOIN ${ssbDb()}.dbo.sectioncode sectioncode
-      ON sectioncode.Code = re.section_code
+
+    LEFT JOIN ${ssbDb()}.dbo.sectioncode
+      sectioncode
+      ON sectioncode.Code =
+         re.section_code
+
     WHERE re.status_type <> 9
-    ORDER BY r.round_year DESC, r.round_no DESC, ${ssbDb()}.dbo.GetUserFullName(re.payroll_no);
+
+    ORDER BY
+      r.round_year DESC,
+      r.round_no DESC,
+      employee_name.full_name,
+      re.payroll_no;
   `);
 
   return result.recordset as RoundEmployeeOptionRow[];
@@ -419,71 +647,195 @@ async function getEvaluatorOptions() {
   const pool = await getDbPool();
 
   const result = await pool.request().query(`
-    WITH draft_round AS (
-      SELECT TOP 1
+    WITH draft_round AS
+    (
+      SELECT TOP (1)
         round_id,
-        CAST(start_date AS date) AS start_date
+        CAST(start_date AS date)
+          AS start_date
       FROM dbo.competency_round
       WHERE status_type = 0
-      ORDER BY round_year DESC, round_no DESC, round_id DESC
+      ORDER BY
+        round_year DESC,
+        round_no DESC,
+        round_id DESC
     )
-    SELECT TOP 3000
-      CAST(p.PAYROLLNO AS varchar(20)) AS payroll_no,
-      ${ssbDb()}.dbo.GetUserFullName(p.PAYROLLNO) AS evaluator_full_name,
-      NULLIF(LTRIM(RTRIM(CAST(p.POSITIONCODE AS varchar(20)))), '') AS position_code,
-      pv.PositionName AS position_name,
-      NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '') AS rank_code,
-      ${ssbDb()}.dbo.GetSSBName(rs.thainame) AS rank_name,
+
+    SELECT TOP (3000)
+      CAST(
+        p.PAYROLLNO AS varchar(20)
+      ) AS payroll_no,
+
+      NULLIF(
+        LTRIM(
+          RTRIM(
+            ISNULL(
+              ${ssbDb()}.dbo.GetSSBName(
+                p.FIRSTTHAINAME
+              ),
+              N''
+            )
+            + N' '
+            + ISNULL(
+                ${ssbDb()}.dbo.GetSSBName(
+                  p.LASTTHAINAME
+                ),
+                N''
+              )
+          )
+        ),
+        N''
+      ) AS evaluator_full_name,
+
+      NULLIF(
+        LTRIM(
+          RTRIM(
+            CAST(
+              p.POSITIONCODE
+              AS varchar(20)
+            )
+          )
+        ),
+        ''
+      ) AS position_code,
+
+      pv.PositionName
+        AS position_name,
+
+      NULLIF(
+        LTRIM(
+          RTRIM(
+            CAST(
+              p.[RANK]
+              AS varchar(20)
+            )
+          )
+        ),
+        ''
+      ) AS rank_code,
+
+      ${ssbDb()}.dbo.GetSSBName(
+        rs.thainame
+      ) AS rank_name,
+
       evaluator_group.rank_group_name,
-      ISNULL(evaluator_group.sort_order, 0) AS rank_order,
-      NULLIF(LTRIM(RTRIM(CAST(p.[DIVISION] AS varchar(20)))), '') AS division_code,
-      ${ssbDb()}.dbo.GetSSBName(ISNULL(ds.thainame, ds.englishname)) AS division_name
+
+      ISNULL(
+        evaluator_group.sort_order,
+        0
+      ) AS rank_order,
+
+      NULLIF(
+        LTRIM(
+          RTRIM(
+            CAST(
+              p.[DIVISION]
+              AS varchar(20)
+            )
+          )
+        ),
+        ''
+      ) AS division_code,
+
+      ${ssbDb()}.dbo.GetSSBName(
+        ISNULL(
+          ds.thainame,
+          ds.englishname
+        )
+      ) AS division_name
+
     FROM ${ssbDb()}.dbo.PYREXT p
+
     CROSS JOIN draft_round dr
-    OUTER APPLY (
+
+    OUTER APPLY
+    (
       SELECT
         CASE
-          WHEN p.FIRSTEMPLOYEEDATE IS NULL THEN NULL
-          WHEN CAST(p.FIRSTEMPLOYEEDATE AS date) > dr.start_date THEN NULL
+          WHEN p.FIRSTEMPLOYEEDATE
+               IS NULL
+          THEN NULL
+
+          WHEN CAST(
+                 p.FIRSTEMPLOYEEDATE
+                 AS date
+               ) > dr.start_date
+          THEN NULL
+
           ELSE
             DATEDIFF(
               YEAR,
-              CAST(p.FIRSTEMPLOYEEDATE AS date),
+              CAST(
+                p.FIRSTEMPLOYEEDATE
+                AS date
+              ),
               dr.start_date
             )
-            - CASE
-                WHEN DATEADD(
-                  YEAR,
-                  DATEDIFF(
-                    YEAR,
-                    CAST(p.FIRSTEMPLOYEEDATE AS date),
-                    dr.start_date
-                  ),
-                  CAST(p.FIRSTEMPLOYEEDATE AS date)
-                ) > dr.start_date
-                THEN 1
-                ELSE 0
-              END
+            -
+            CASE
+              WHEN DATEADD(
+                     YEAR,
+                     DATEDIFF(
+                       YEAR,
+                       CAST(
+                         p.FIRSTEMPLOYEEDATE
+                         AS date
+                       ),
+                       dr.start_date
+                     ),
+                     CAST(
+                       p.FIRSTEMPLOYEEDATE
+                       AS date
+                     )
+                   ) > dr.start_date
+              THEN 1
+              ELSE 0
+            END
         END AS service_year
     ) service_info
-    OUTER APPLY (
-      SELECT TOP 1
+
+    OUTER APPLY
+    (
+      SELECT TOP (1)
         mapped_group.rank_group_id,
         mapped_group.rank_group_name,
         mapped_group.sort_order
-      FROM (
+      FROM
+      (
         SELECT
           rg.rank_group_id,
           rg.rank_group_name,
           rg.sort_order
-        FROM dbo.competency_rank_group_map rgm
+        FROM dbo.competency_rank_group_map
+          rgm
         JOIN dbo.competency_rank_group rg
-          ON rg.rank_group_id = rgm.rank_group_id
+          ON rg.rank_group_id =
+             rgm.rank_group_id
          AND rg.active_status = 1
-        WHERE NULLIF(LTRIM(RTRIM(CAST(p.SITECODE AS varchar(20)))), '') = '1'
+        WHERE NULLIF(
+                LTRIM(
+                  RTRIM(
+                    CAST(
+                      p.SITECODE
+                      AS varchar(20)
+                    )
+                  )
+                ),
+                ''
+              ) = '1'
           AND rgm.active_status = 1
           AND rgm.rank_code =
-              NULLIF(LTRIM(RTRIM(CAST(p.[RANK] AS varchar(20)))), '')
+              NULLIF(
+                LTRIM(
+                  RTRIM(
+                    CAST(
+                      p.[RANK]
+                      AS varchar(20)
+                    )
+                  )
+                ),
+                ''
+              )
 
         UNION ALL
 
@@ -491,46 +843,67 @@ async function getEvaluatorOptions() {
           rg.rank_group_id,
           rg.rank_group_name,
           rg.sort_order
-        FROM dbo.competency_tenure_rank_group trg
+        FROM dbo.competency_tenure_rank_group
+          trg
         JOIN dbo.competency_rank_group rg
-          ON rg.rank_group_id = trg.rank_group_id
+          ON rg.rank_group_id =
+             trg.rank_group_id
          AND rg.active_status = 1
         WHERE ISNULL(
-                NULLIF(LTRIM(RTRIM(CAST(p.SITECODE AS varchar(20)))), ''),
+                NULLIF(
+                  LTRIM(
+                    RTRIM(
+                      CAST(
+                        p.SITECODE
+                        AS varchar(20)
+                      )
+                    )
+                  ),
+                  ''
+                ),
                 ''
               ) <> '1'
           AND trg.active_status = 1
-          AND service_info.service_year IS NOT NULL
-          AND service_info.service_year >= trg.min_service_year
-          AND (
+          AND service_info.service_year
+              IS NOT NULL
+          AND service_info.service_year
+              >= trg.min_service_year
+          AND
+          (
             trg.max_service_year IS NULL
-            OR service_info.service_year < trg.max_service_year
+            OR service_info.service_year
+               < trg.max_service_year
           )
       ) mapped_group
-      ORDER BY mapped_group.sort_order, mapped_group.rank_group_id
+      ORDER BY
+        mapped_group.sort_order,
+        mapped_group.rank_group_id
     ) evaluator_group
+
     LEFT JOIN ${ssbDb()}.dbo.PositionView pv
-      ON pv.PositionCode = p.POSITIONCODE
+      ON pv.PositionCode =
+         p.POSITIONCODE
+
     LEFT JOIN ${ssbDb()}.dbo.SYSCONFIG rs
       ON rs.CODE = p.[RANK]
      AND rs.CTRLCODE = '60010'
+
     LEFT JOIN ${ssbDb()}.dbo.SYSCONFIG ds
       ON ds.CODE = p.[DIVISION]
      AND ds.CTRLCODE = '10028'
+
     WHERE p.TERMINATEDATE IS NULL
       AND p.PAYROLLNO IS NOT NULL
-      AND evaluator_group.rank_group_id IS NOT NULL
-    ORDER BY ${ssbDb()}.dbo.GetUserFullName(p.PAYROLLNO);
+      AND evaluator_group.rank_group_id
+          IS NOT NULL
+
+    ORDER BY
+      evaluator_full_name,
+      p.PAYROLLNO;
   `);
 
   return result.recordset as EvaluatorOptionRow[];
 }
-
-type EvaluatorRankSnapshot = {
-  payroll_no: string;
-  rank_group_id: number;
-  evaluator_rank_order: number;
-};
 
 async function getEvaluatorRankSnapshot(
   pool: Awaited<ReturnType<typeof getDbPool>>,
@@ -661,57 +1034,158 @@ async function getTableDivisionOptions() {
   return result.recordset as DivisionOptionRow[];
 }
 
-function buildAssignmentTableWhereClause(state: AssignmentTableState) {
-  const whereParts = ["r.status_type <> 9", "re.status_type <> 9"];
+function buildAssignmentTableWhereClause(
+  state: AssignmentTableState,
+) {
+  const whereParts = [
+    "re.status_type <> 9",
+  ];
 
   if (state.search) {
     whereParts.push(`
       (
         r.round_code LIKE @search_like
         OR re.payroll_no LIKE @search_like
-        OR ${ssbDb()}.dbo.GetUserFullName(re.payroll_no) LIKE @search_like
-        OR re.division_code LIKE @search_like
-        OR ${ssbDb()}.dbo.GetSSBName(ISNULL(eds.thainame, eds.englishname)) LIKE @search_like
-        OR l1.evaluator_payroll_no LIKE @search_like
-        OR ${ssbDb()}.dbo.GetUserFullName(l1.evaluator_payroll_no) LIKE @search_like
-        OR l2.evaluator_payroll_no LIKE @search_like
-        OR ${ssbDb()}.dbo.GetUserFullName(l2.evaluator_payroll_no) LIKE @search_like
+        OR employee_name.full_name
+           LIKE @search_like
+        OR ${ssbDb()}.dbo.GetSSBName(
+             ISNULL(
+               eds.thainame,
+               eds.englishname
+             )
+           ) LIKE @search_like
+        OR l1.evaluator_payroll_no
+           LIKE @search_like
+        OR level1_name.full_name
+           LIKE @search_like
+        OR l2.evaluator_payroll_no
+           LIKE @search_like
+        OR level2_name.full_name
+           LIKE @search_like
+        OR c1.evaluator_payroll_no
+           LIKE @search_like
+        OR cancelled_level1_name.full_name
+           LIKE @search_like
+        OR c2.evaluator_payroll_no
+           LIKE @search_like
+        OR cancelled_level2_name.full_name
+           LIKE @search_like
       )
     `);
   }
 
   if (state.roundId) {
-    whereParts.push("re.round_id = @filter_round_id");
-  }
-
-  if (state.divisionCode) {
-    whereParts.push("re.division_code = @filter_division_code");
-  }
-
-  if (state.level === "1") {
-    whereParts.push("l1.assignment_id IS NOT NULL");
-  }
-
-  if (state.level === "2") {
-    whereParts.push("l2.assignment_id IS NOT NULL");
-  }
-
-  if (state.level === "missing1") {
-    whereParts.push("l1.assignment_id IS NULL");
-  }
-
-  if (state.level === "missing2") {
-    whereParts.push("l2.assignment_id IS NULL");
-  }
-
-  if (state.status === "active") {
     whereParts.push(
-      "(l1.assignment_id IS NOT NULL OR l2.assignment_id IS NOT NULL)",
+      "re.round_id = @filter_round_id",
     );
   }
 
+  if (state.divisionCode) {
+    whereParts.push(
+      "re.division_code = @filter_division_code",
+    );
+  }
+
+  if (state.level === "1") {
+    whereParts.push(
+      state.status === "inactive"
+        ? `EXISTS
+           (
+             SELECT 1
+             FROM dbo.competency_evaluator_assignment check_assignment
+             WHERE check_assignment.round_employee_id =
+                   re.round_employee_id
+               AND check_assignment.evaluator_level = 1
+               AND check_assignment.status_type = 9
+           )`
+        : `EXISTS
+           (
+             SELECT 1
+             FROM dbo.competency_evaluator_assignment check_assignment
+             WHERE check_assignment.round_employee_id =
+                   re.round_employee_id
+               AND check_assignment.evaluator_level = 1
+               AND check_assignment.status_type = 0
+           )`,
+    );
+  }
+
+  if (state.level === "2") {
+    whereParts.push(
+      state.status === "inactive"
+        ? `EXISTS
+           (
+             SELECT 1
+             FROM dbo.competency_evaluator_assignment check_assignment
+             WHERE check_assignment.round_employee_id =
+                   re.round_employee_id
+               AND check_assignment.evaluator_level = 2
+               AND check_assignment.status_type = 9
+           )`
+        : `EXISTS
+           (
+             SELECT 1
+             FROM dbo.competency_evaluator_assignment check_assignment
+             WHERE check_assignment.round_employee_id =
+                   re.round_employee_id
+               AND check_assignment.evaluator_level = 2
+               AND check_assignment.status_type = 0
+           )`,
+    );
+  }
+
+  if (state.level === "missing1") {
+    whereParts.push(`
+      NOT EXISTS
+      (
+        SELECT 1
+        FROM dbo.competency_evaluator_assignment check_assignment
+        WHERE check_assignment.round_employee_id =
+              re.round_employee_id
+          AND check_assignment.evaluator_level = 1
+          AND check_assignment.status_type = 0
+      )
+    `);
+  }
+
+  if (state.level === "missing2") {
+    whereParts.push(`
+      NOT EXISTS
+      (
+        SELECT 1
+        FROM dbo.competency_evaluator_assignment check_assignment
+        WHERE check_assignment.round_employee_id =
+              re.round_employee_id
+          AND check_assignment.evaluator_level = 2
+          AND check_assignment.status_type = 0
+      )
+    `);
+  }
+
+  if (state.status === "active") {
+    whereParts.push(`
+      EXISTS
+      (
+        SELECT 1
+        FROM dbo.competency_evaluator_assignment check_assignment
+        WHERE check_assignment.round_employee_id =
+              re.round_employee_id
+          AND check_assignment.status_type = 0
+      )
+    `);
+  }
+
   if (state.status === "inactive") {
-    whereParts.push("cx.assignment_id IS NOT NULL");
+    whereParts.push(`
+      EXISTS
+      (
+        SELECT 1
+        FROM dbo.competency_evaluator_assignment check_assignment
+        WHERE check_assignment.round_employee_id =
+              re.round_employee_id
+          AND check_assignment.status_type = 9
+      )
+    `);
   }
 
   return whereParts.join(" AND ");
@@ -733,100 +1207,465 @@ function applyAssignmentTableInputs(request: any, state: AssignmentTableState) {
   return request;
 }
 
-async function getAssignmentsPage(state: AssignmentTableState) {
+async function getAssignmentsPage(
+  state: AssignmentTableState,
+) {
   const pool = await getDbPool();
-  const whereClause = buildAssignmentTableWhereClause(state);
-  const offset = (state.page - 1) * state.pageSize;
+  const whereClause =
+    buildAssignmentTableWhereClause(
+      state,
+    );
 
   const baseFrom = `
     FROM dbo.competency_round_employee re
+
     JOIN dbo.competency_round r
       ON r.round_id = re.round_id
-    LEFT JOIN ${ssbDb()}.dbo.SYSCONFIG eds
+
+    LEFT JOIN ${ssbDb()}.dbo.SYSCONFIG
+      eds
       ON eds.CODE = re.division_code
      AND eds.CTRLCODE = '10028'
-    OUTER APPLY (
-      SELECT TOP 1
+
+    OUTER APPLY
+    (
+      SELECT TOP (1)
         a.assignment_id,
         a.evaluator_payroll_no,
         a.status_type,
-        ev.status_type AS evaluation_status_type
-      FROM dbo.competency_evaluator_assignment a
-      LEFT JOIN dbo.competency_evaluation ev
-        ON ev.assignment_id = a.assignment_id
-      WHERE a.round_employee_id = re.round_employee_id
+        evaluation.status_type
+          AS evaluation_status_type
+      FROM dbo.competency_evaluator_assignment
+        a
+      OUTER APPLY
+      (
+        SELECT TOP (1)
+          ev.status_type
+        FROM dbo.competency_evaluation ev
+        WHERE ev.assignment_id =
+              a.assignment_id
+        ORDER BY
+          ev.evaluation_id DESC
+      ) evaluation
+      WHERE a.round_employee_id =
+            re.round_employee_id
         AND a.evaluator_level = 1
-        AND a.status_type <> 9
-      ORDER BY a.assignment_id DESC
+        AND a.status_type = 0
+      ORDER BY
+        a.assignment_id DESC
     ) l1
-    OUTER APPLY (
-      SELECT TOP 1
+
+    OUTER APPLY
+    (
+      SELECT TOP (1)
         a.assignment_id,
         a.evaluator_payroll_no,
         a.status_type,
-        ev.status_type AS evaluation_status_type
-      FROM dbo.competency_evaluator_assignment a
-      LEFT JOIN dbo.competency_evaluation ev
-        ON ev.assignment_id = a.assignment_id
-      WHERE a.round_employee_id = re.round_employee_id
+        evaluation.status_type
+          AS evaluation_status_type
+      FROM dbo.competency_evaluator_assignment
+        a
+      OUTER APPLY
+      (
+        SELECT TOP (1)
+          ev.status_type
+        FROM dbo.competency_evaluation ev
+        WHERE ev.assignment_id =
+              a.assignment_id
+        ORDER BY
+          ev.evaluation_id DESC
+      ) evaluation
+      WHERE a.round_employee_id =
+            re.round_employee_id
         AND a.evaluator_level = 2
-        AND a.status_type <> 9
-      ORDER BY a.assignment_id DESC
+        AND a.status_type = 0
+      ORDER BY
+        a.assignment_id DESC
     ) l2
-    OUTER APPLY (
-      SELECT TOP 1 a.assignment_id
-      FROM dbo.competency_evaluator_assignment a
-      WHERE a.round_employee_id = re.round_employee_id
+
+    OUTER APPLY
+    (
+      SELECT TOP (1)
+        a.assignment_id,
+        a.evaluator_payroll_no
+      FROM dbo.competency_evaluator_assignment
+        a
+      WHERE a.round_employee_id =
+            re.round_employee_id
+        AND a.evaluator_level = 1
         AND a.status_type = 9
-      ORDER BY a.assignment_id DESC
-    ) cx
+      ORDER BY
+        a.assignment_id DESC
+    ) c1
+
+    OUTER APPLY
+    (
+      SELECT TOP (1)
+        a.assignment_id,
+        a.evaluator_payroll_no
+      FROM dbo.competency_evaluator_assignment
+        a
+      WHERE a.round_employee_id =
+            re.round_employee_id
+        AND a.evaluator_level = 2
+        AND a.status_type = 9
+      ORDER BY
+        a.assignment_id DESC
+    ) c2
+
+    OUTER APPLY
+    (
+      SELECT TOP (1)
+        NULLIF(
+          LTRIM(
+            RTRIM(
+              ISNULL(
+                ${ssbDb()}.dbo.GetSSBName(
+                  p.FIRSTTHAINAME
+                ),
+                N''
+              )
+              + N' '
+              + ISNULL(
+                  ${ssbDb()}.dbo.GetSSBName(
+                    p.LASTTHAINAME
+                  ),
+                  N''
+                )
+            )
+          ),
+          N''
+        ) AS full_name
+      FROM ${ssbDb()}.dbo.PYREXT p
+      WHERE p.PAYROLLNO =
+            re.payroll_no
+      ORDER BY
+        CASE
+          WHEN p.TERMINATEDATE IS NULL
+          THEN 0
+          ELSE 1
+        END
+    ) employee_name
+
+    OUTER APPLY
+    (
+      SELECT TOP (1)
+        NULLIF(
+          LTRIM(
+            RTRIM(
+              ISNULL(
+                ${ssbDb()}.dbo.GetSSBName(
+                  p.FIRSTTHAINAME
+                ),
+                N''
+              )
+              + N' '
+              + ISNULL(
+                  ${ssbDb()}.dbo.GetSSBName(
+                    p.LASTTHAINAME
+                  ),
+                  N''
+                )
+            )
+          ),
+          N''
+        ) AS full_name
+      FROM ${ssbDb()}.dbo.PYREXT p
+      WHERE p.PAYROLLNO =
+            l1.evaluator_payroll_no
+      ORDER BY
+        CASE
+          WHEN p.TERMINATEDATE IS NULL
+          THEN 0
+          ELSE 1
+        END
+    ) level1_name
+
+    OUTER APPLY
+    (
+      SELECT TOP (1)
+        NULLIF(
+          LTRIM(
+            RTRIM(
+              ISNULL(
+                ${ssbDb()}.dbo.GetSSBName(
+                  p.FIRSTTHAINAME
+                ),
+                N''
+              )
+              + N' '
+              + ISNULL(
+                  ${ssbDb()}.dbo.GetSSBName(
+                    p.LASTTHAINAME
+                  ),
+                  N''
+                )
+            )
+          ),
+          N''
+        ) AS full_name
+      FROM ${ssbDb()}.dbo.PYREXT p
+      WHERE p.PAYROLLNO =
+            l2.evaluator_payroll_no
+      ORDER BY
+        CASE
+          WHEN p.TERMINATEDATE IS NULL
+          THEN 0
+          ELSE 1
+        END
+    ) level2_name
+
+    OUTER APPLY
+    (
+      SELECT TOP (1)
+        NULLIF(
+          LTRIM(
+            RTRIM(
+              ISNULL(
+                ${ssbDb()}.dbo.GetSSBName(
+                  p.FIRSTTHAINAME
+                ),
+                N''
+              )
+              + N' '
+              + ISNULL(
+                  ${ssbDb()}.dbo.GetSSBName(
+                    p.LASTTHAINAME
+                  ),
+                  N''
+                )
+            )
+          ),
+          N''
+        ) AS full_name
+      FROM ${ssbDb()}.dbo.PYREXT p
+      WHERE p.PAYROLLNO =
+            c1.evaluator_payroll_no
+      ORDER BY
+        CASE
+          WHEN p.TERMINATEDATE IS NULL
+          THEN 0
+          ELSE 1
+        END
+    ) cancelled_level1_name
+
+    OUTER APPLY
+    (
+      SELECT TOP (1)
+        NULLIF(
+          LTRIM(
+            RTRIM(
+              ISNULL(
+                ${ssbDb()}.dbo.GetSSBName(
+                  p.FIRSTTHAINAME
+                ),
+                N''
+              )
+              + N' '
+              + ISNULL(
+                  ${ssbDb()}.dbo.GetSSBName(
+                    p.LASTTHAINAME
+                  ),
+                  N''
+                )
+            )
+          ),
+          N''
+        ) AS full_name
+      FROM ${ssbDb()}.dbo.PYREXT p
+      WHERE p.PAYROLLNO =
+            c2.evaluator_payroll_no
+      ORDER BY
+        CASE
+          WHEN p.TERMINATEDATE IS NULL
+          THEN 0
+          ELSE 1
+        END
+    ) cancelled_level2_name
+
     WHERE ${whereClause}
   `;
 
-  const countRequest = applyAssignmentTableInputs(pool.request(), state);
-  const countResult = await countRequest.query(`
-    SELECT COUNT(1) AS total_rows
-    ${baseFrom};
-  `);
+  const countRequest =
+    applyAssignmentTableInputs(
+      pool.request(),
+      state,
+    );
 
-  const totalRows = Number(countResult.recordset[0]?.total_rows || 0);
-  const totalPages = Math.max(1, Math.ceil(totalRows / state.pageSize));
-  const safePage = Math.min(state.page, totalPages);
-  const safeOffset = totalRows === 0 ? 0 : (safePage - 1) * state.pageSize;
+  const countResult =
+    await countRequest.query(`
+      SELECT
+        COUNT_BIG(1) AS total_rows
+      ${baseFrom};
+    `);
 
-  const rowsRequest = applyAssignmentTableInputs(pool.request(), state)
-    .input("offset", sql.Int, safeOffset)
-    .input("page_size", sql.Int, state.pageSize);
+  const totalRows = Number(
+    countResult.recordset[0]
+      ?.total_rows || 0,
+  );
 
-  const rowsResult = await rowsRequest.query(`
-    SELECT
-      re.round_employee_id,
-      re.round_id,
-      r.round_code,
-      r.status_type AS round_status_type,
-      re.payroll_no AS employee_payroll_no,
-      ${ssbDb()}.dbo.GetUserFullName(re.payroll_no) AS employee_full_name,
-      re.division_code AS employee_division_code,
-      ${ssbDb()}.dbo.GetSSBName(ISNULL(eds.thainame, eds.englishname)) AS employee_division_name,
-      l1.assignment_id AS level1_assignment_id,
-      l1.evaluator_payroll_no AS level1_evaluator_payroll_no,
-      ${ssbDb()}.dbo.GetUserFullName(l1.evaluator_payroll_no) AS level1_evaluator_full_name,
-      l1.evaluation_status_type AS level1_evaluation_status_type,
-      l2.assignment_id AS level2_assignment_id,
-      l2.evaluator_payroll_no AS level2_evaluator_payroll_no,
-      ${ssbDb()}.dbo.GetUserFullName(l2.evaluator_payroll_no) AS level2_evaluator_full_name,
-      l2.evaluation_status_type AS level2_evaluation_status_type,
-      ISNULL(re.evaluator_required_type, 2) AS evaluator_required_type,
-      CASE WHEN cx.assignment_id IS NULL THEN 0 ELSE 1 END AS has_cancelled_assignment
-    ${baseFrom}
-    ORDER BY r.round_year DESC, r.round_no DESC, re.division_code, re.payroll_no
-    OFFSET @offset ROWS
-    FETCH NEXT @page_size ROWS ONLY;
-  `);
+  const totalPages = Math.max(
+    1,
+    Math.ceil(
+      totalRows / state.pageSize,
+    ),
+  );
+
+  const safePage = Math.min(
+    state.page,
+    totalPages,
+  );
+
+  const safeOffset =
+    totalRows === 0
+      ? 0
+      : (safePage - 1) *
+        state.pageSize;
+
+  const rowsRequest =
+    applyAssignmentTableInputs(
+      pool.request(),
+      state,
+    )
+      .input(
+        "offset",
+        sql.Int,
+        safeOffset,
+      )
+      .input(
+        "page_size",
+        sql.Int,
+        state.pageSize,
+      );
+
+  const rowsResult =
+    await rowsRequest.query(`
+      SELECT
+        re.round_employee_id,
+        re.round_id,
+        r.round_code,
+
+        r.status_type
+          AS round_status_type,
+
+        CASE
+          WHEN l1.assignment_id IS NOT NULL
+            OR l2.assignment_id IS NOT NULL
+          THEN 0
+          WHEN c1.assignment_id IS NOT NULL
+            OR c2.assignment_id IS NOT NULL
+          THEN 9
+          ELSE NULL
+        END AS row_assignment_status_type,
+
+        re.payroll_no
+          AS employee_payroll_no,
+
+        employee_name.full_name
+          AS employee_full_name,
+
+        re.division_code
+          AS employee_division_code,
+
+        ${ssbDb()}.dbo.GetSSBName(
+          ISNULL(
+            eds.thainame,
+            eds.englishname
+          )
+        ) AS employee_division_name,
+
+        l1.assignment_id
+          AS level1_assignment_id,
+
+        l1.evaluator_payroll_no
+          AS level1_evaluator_payroll_no,
+
+        level1_name.full_name
+          AS level1_evaluator_full_name,
+
+        l1.evaluation_status_type
+          AS level1_evaluation_status_type,
+
+        l2.assignment_id
+          AS level2_assignment_id,
+
+        l2.evaluator_payroll_no
+          AS level2_evaluator_payroll_no,
+
+        level2_name.full_name
+          AS level2_evaluator_full_name,
+
+        l2.evaluation_status_type
+          AS level2_evaluation_status_type,
+
+        ISNULL(
+          re.evaluator_required_type,
+          2
+        ) AS evaluator_required_type,
+
+        CASE
+          WHEN c1.assignment_id IS NULL
+           AND c2.assignment_id IS NULL
+          THEN 0
+          ELSE 1
+        END AS has_cancelled_assignment,
+
+        c1.assignment_id
+          AS cancelled_level1_assignment_id,
+
+        c1.evaluator_payroll_no
+          AS cancelled_level1_evaluator_payroll_no,
+
+        cancelled_level1_name.full_name
+          AS cancelled_level1_evaluator_full_name,
+
+        c2.assignment_id
+          AS cancelled_level2_assignment_id,
+
+        c2.evaluator_payroll_no
+          AS cancelled_level2_evaluator_payroll_no,
+
+        cancelled_level2_name.full_name
+          AS cancelled_level2_evaluator_full_name
+
+      ${baseFrom}
+
+      ORDER BY
+        r.round_year DESC,
+        r.round_no DESC,
+        re.division_code,
+        re.payroll_no
+
+      OFFSET @offset ROWS
+      FETCH NEXT @page_size ROWS ONLY;
+    `);
+
+  const databaseRows =
+    rowsResult.recordset as AssignmentTableRow[];
+
+  /*
+    Guard ชั้นสุดท้ายก่อนส่งข้อมูลไป Browser
+    ป้องกันรายการ status_type = 9 หลุดเข้า Filter ใช้งาน
+    และป้องกันรายการใช้งานหลุดเข้า Filter ยกเลิก
+  */
+  const verifiedRows = databaseRows.filter(
+    (row) =>
+      state.status === "inactive"
+        ? Number(
+            row.row_assignment_status_type,
+          ) === 9
+        : Number(
+            row.row_assignment_status_type,
+          ) === 0,
+  );
 
   return {
-    rows: rowsResult.recordset as AssignmentTableRow[],
-    totalRows,
+    rows: verifiedRows,
+    totalRows:
+      verifiedRows.length ===
+        databaseRows.length
+        ? totalRows
+        : verifiedRows.length,
   } satisfies AssignmentTablePageResult;
 }
 
@@ -952,6 +1791,7 @@ async function saveAssignment(formData: FormData) {
         re.round_id,
         re.payroll_no,
         re.rank_group_id,
+        ISNULL(re.evaluator_required_type, 2) AS evaluator_required_type,
         ISNULL(erg.sort_order, 0) AS employee_rank_order,
         r.status_type AS round_status_type,
         (
@@ -992,6 +1832,7 @@ async function saveAssignment(formData: FormData) {
     | {
         payroll_no: string;
         employee_rank_order: number;
+        evaluator_required_type: number;
         round_status_type: number;
         active_same_level_count: number;
         active_same_evaluator_count: number;
@@ -1007,6 +1848,16 @@ async function saveAssignment(formData: FormData) {
     redirectWithAlert(
       "warning",
       "รอบนี้ไม่ใช่สถานะร่าง ไม่สามารถกำหนดผู้ประเมินได้",
+    );
+  }
+
+  if (
+    Number(roundEmployee.evaluator_required_type) === 1 &&
+    evaluatorLevel !== 1
+  ) {
+    redirectWithAlert(
+      "warning",
+      "ผู้ถูกประเมินรายนี้ตั้งค่าใช้หัวหน้าใกล้ชิดคนเดียว 100% จึงต้องกำหนดเป็นหัวหน้าใกล้ชิดเท่านั้น",
     );
   }
 
@@ -1137,6 +1988,7 @@ async function updateAssignment(formData: FormData) {
         re.round_id,
         re.payroll_no,
         re.rank_group_id,
+        ISNULL(re.evaluator_required_type, 2) AS evaluator_required_type,
         ISNULL(erg.sort_order, 0) AS employee_rank_order,
         r.status_type AS round_status_type,
         ev.status_type AS evaluation_status_type,
@@ -1174,6 +2026,7 @@ async function updateAssignment(formData: FormData) {
     | {
         payroll_no: string;
         employee_rank_order: number;
+        evaluator_required_type: number;
         round_status_type: number;
         evaluation_status_type: number | null;
         active_same_level_count: number;
@@ -1197,6 +2050,16 @@ async function updateAssignment(formData: FormData) {
 
   if (roundEmployee.evaluation_status_type === 1) {
     redirectWithAlert("warning", "รายการนี้ส่งผลประเมินแล้ว ไม่สามารถแก้ไขได้");
+  }
+
+  if (
+    Number(roundEmployee.evaluator_required_type) === 1 &&
+    evaluatorLevel !== 1
+  ) {
+    redirectWithAlert(
+      "warning",
+      "ผู้ถูกประเมินรายนี้ใช้หัวหน้าใกล้ชิดคนเดียว 100% จึงไม่สามารถเปลี่ยนเป็นหัวหน้าใหญ่ได้",
+    );
   }
 
   if (String(roundEmployee.payroll_no) === evaluatorPayrollNo) {
@@ -1284,6 +2147,7 @@ async function toggleAssignmentStatus(formData: FormData) {
         a.evaluator_payroll_no,
         a.evaluator_level,
         a.status_type,
+        ISNULL(re.evaluator_required_type, 2) AS evaluator_required_type,
         r.status_type AS round_status_type,
         ev.status_type AS evaluation_status_type,
         (
@@ -1315,6 +2179,8 @@ async function toggleAssignmentStatus(formData: FormData) {
   const assignment = checkResult.recordset[0] as
     | {
         round_status_type: number;
+        evaluator_required_type: number;
+        evaluator_level: number;
         evaluation_status_type: number | null;
         active_same_level_count: number;
         active_same_evaluator_count: number;
@@ -1329,6 +2195,17 @@ async function toggleAssignmentStatus(formData: FormData) {
     redirectWithAlert(
       "warning",
       "รอบนี้ไม่ใช่สถานะร่าง ไม่สามารถแก้ไขผู้ประเมินได้",
+    );
+  }
+
+  if (
+    nextStatus === 0 &&
+    Number(assignment.evaluator_required_type) === 1 &&
+    Number(assignment.evaluator_level) !== 1
+  ) {
+    redirectWithAlert(
+      "warning",
+      "ผู้ถูกประเมินรายนี้ใช้หัวหน้าใกล้ชิดคนเดียว 100% ไม่สามารถเปิดใช้งานรายการหัวหน้าใหญ่ได้",
     );
   }
 
@@ -1380,8 +2257,7 @@ async function toggleAssignmentStatus(formData: FormData) {
 async function toggleEvaluatorRequiredType(formData: FormData) {
   "use server";
 
-  await requireAdminSession();
-
+  const session = await requireAdminSession();
   const roundEmployeeId = Number(formData.get("round_employee_id") || 0);
   const nextType = Number(formData.get("next_type") || 2);
 
@@ -1389,49 +2265,34 @@ async function toggleEvaluatorRequiredType(formData: FormData) {
     redirectWithAlert("warning", "ข้อมูลไม่ครบถ้วน");
   }
 
-  const pool = await getDbPool();
+  try {
+    const result = await updateEvaluatorRequiredTypeSafely(
+      roundEmployeeId,
+      nextType,
+      session.emp_id,
+    );
 
-  const rowResult = await pool
-    .request()
-    .input("round_employee_id", sql.Int, roundEmployeeId).query(`
-      SELECT TOP 1
-        re.round_employee_id,
-        re.evaluator_required_type,
-        r.status_type AS round_status_type
-      FROM dbo.competency_round_employee re
-      JOIN dbo.competency_round r
-        ON r.round_id = re.round_id
-      WHERE re.round_employee_id = @round_employee_id
-        AND re.status_type <> 9;
-    `);
+    revalidatePath("/admin/assignments");
+    revalidatePath("/admin/round-readiness");
+    revalidatePath("/admin/round-issues");
 
-  const row = rowResult.recordset[0] as
-    { round_status_type: number; evaluator_required_type: number } | undefined;
-
-  if (!row) {
-    redirectWithAlert("warning", "ไม่พบผู้ถูกประเมินในรอบ");
+    redirectWithAlert(
+      "success",
+      nextType === 1
+        ? result.normalizedAssignment
+          ? "เปิดใช้หัวหน้าใกล้ชิดคนเดียว 100% และปรับหัวหน้าใหญ่เดิมเป็นหัวหน้าใกล้ชิดเรียบร้อยแล้ว"
+          : "เปิดใช้หัวหน้าใกล้ชิดคนเดียว 100% เรียบร้อยแล้ว"
+        : "ตั้งค่าให้ต้องมีผู้ประเมิน 2 คนเรียบร้อยแล้ว",
+    );
+  } catch (error) {
+    console.error(error);
+    redirectWithAlert(
+      "warning",
+      error instanceof Error
+        ? error.message
+        : "ไม่สามารถเปลี่ยนรูปแบบผู้ประเมินได้",
+    );
   }
-
-  if (Number(row.round_status_type) !== 0) {
-    redirectWithAlert("warning", "แก้ไขได้เฉพาะรอบสถานะร่างเท่านั้น");
-  }
-
-  await pool
-    .request()
-    .input("round_employee_id", sql.Int, roundEmployeeId)
-    .input("next_type", sql.TinyInt, nextType).query(`
-      UPDATE dbo.competency_round_employee
-      SET evaluator_required_type = @next_type
-      WHERE round_employee_id = @round_employee_id;
-    `);
-
-  revalidatePath("/admin/assignments");
-  redirectWithAlert(
-    "success",
-    nextType === 1
-      ? "ตั้งค่าให้ใช้ผู้ประเมินคนเดียวเรียบร้อยแล้ว"
-      : "ตั้งค่าให้ต้องมีผู้ประเมิน 2 คนเรียบร้อยแล้ว",
-  );
 }
 
 async function cancelEmployeeAssignments(formData: FormData) {
@@ -1587,6 +2448,14 @@ async function bulkAssignDivision(formData: FormData) {
         AND re.division_code = @division_code
         AND (@section_code IS NULL OR re.section_code = @section_code)
         AND re.payroll_no <> @evaluator_payroll_no
+
+        AND (
+
+          @evaluator_level = 1
+
+          OR ISNULL(re.evaluator_required_type, 2) = 2
+
+        )
         AND NOT EXISTS (
           SELECT 1
           FROM dbo.competency_evaluator_assignment a
@@ -1644,6 +2513,14 @@ async function bulkAssignDivision(formData: FormData) {
           AND re.division_code = @division_code
           AND (@section_code IS NULL OR re.section_code = @section_code)
           AND re.payroll_no <> @evaluator_payroll_no
+
+          AND (
+
+            @evaluator_level = 1
+
+            OR ISNULL(re.evaluator_required_type, 2) = 2
+
+          )
           AND NOT EXISTS (
             SELECT 1
             FROM dbo.competency_evaluator_assignment a
@@ -1811,6 +2688,220 @@ async function toggleEvaluatorRequiredTypeClient(
   };
 }
 
+async function reactivateAssignmentClient(
+  assignmentId: number,
+  inputState: AssignmentTableState,
+): Promise<AssignmentTableActionResult> {
+  "use server";
+
+  await requireAdminSession();
+
+  const tableBefore =
+    await getAssignmentsTablePayload(
+      inputState,
+    );
+
+  if (!assignmentId) {
+    return {
+      ok: false,
+      type: "error",
+      message:
+        "ข้อมูลผู้ประเมินไม่ถูกต้อง",
+      table: tableBefore,
+    };
+  }
+
+  const pool = await getDbPool();
+
+  const checkResult = await pool
+    .request()
+    .input(
+      "assignment_id",
+      sql.Int,
+      assignmentId,
+    )
+    .query(`
+      SELECT TOP (1)
+        a.assignment_id,
+        a.round_employee_id,
+        a.evaluator_payroll_no,
+        a.evaluator_level,
+        a.status_type,
+        ISNULL(
+          re.evaluator_required_type,
+          2
+        ) AS evaluator_required_type,
+        r.status_type
+          AS round_status_type,
+
+        (
+          SELECT COUNT(*)
+          FROM dbo.competency_evaluator_assignment active_assignment
+          WHERE active_assignment.round_employee_id =
+                a.round_employee_id
+            AND active_assignment.evaluator_level =
+                a.evaluator_level
+            AND active_assignment.status_type <> 9
+            AND active_assignment.assignment_id <>
+                a.assignment_id
+        ) AS active_same_level_count,
+
+        (
+          SELECT COUNT(*)
+          FROM dbo.competency_evaluator_assignment active_assignment
+          WHERE active_assignment.round_employee_id =
+                a.round_employee_id
+            AND active_assignment.evaluator_payroll_no =
+                a.evaluator_payroll_no
+            AND active_assignment.status_type <> 9
+            AND active_assignment.assignment_id <>
+                a.assignment_id
+        ) AS active_same_evaluator_count
+
+      FROM dbo.competency_evaluator_assignment a
+      JOIN dbo.competency_round_employee re
+        ON re.round_employee_id =
+           a.round_employee_id
+       AND re.status_type <> 9
+      JOIN dbo.competency_round r
+        ON r.round_id = re.round_id
+      WHERE a.assignment_id =
+            @assignment_id;
+    `);
+
+  const assignment =
+    checkResult.recordset[0] as
+      | {
+          evaluator_level: number;
+          evaluator_required_type: number;
+          round_status_type: number;
+          status_type: number;
+          active_same_level_count: number;
+          active_same_evaluator_count: number;
+        }
+      | undefined;
+
+  if (!assignment) {
+    return {
+      ok: false,
+      type: "error",
+      message:
+        "ไม่พบรายการผู้ประเมิน",
+      table: tableBefore,
+    };
+  }
+
+  if (
+    Number(assignment.status_type) !== 9
+  ) {
+    return {
+      ok: false,
+      type: "warning",
+      message:
+        "รายการนี้ไม่ได้อยู่ในสถานะยกเลิก",
+      table: tableBefore,
+    };
+  }
+
+  if (
+    Number(
+      assignment.round_status_type,
+    ) !== 0
+  ) {
+    return {
+      ok: false,
+      type: "warning",
+      message:
+        "เปิดใช้งานได้เฉพาะรอบสถานะร่างเท่านั้น",
+      table: tableBefore,
+    };
+  }
+
+  if (
+    Number(
+      assignment.evaluator_required_type,
+    ) === 1 &&
+    Number(
+      assignment.evaluator_level,
+    ) !== 1
+  ) {
+    return {
+      ok: false,
+      type: "warning",
+      message:
+        "ผู้ถูกประเมินรายนี้ใช้หัวหน้าใกล้ชิดคนเดียว 100% จึงไม่สามารถเปิดใช้งานหัวหน้าใหญ่ได้",
+      table: tableBefore,
+    };
+  }
+
+  if (
+    Number(
+      assignment.active_same_level_count,
+    ) > 0
+  ) {
+    return {
+      ok: false,
+      type: "warning",
+      message:
+        "มีผู้ประเมินระดับเดียวกันที่ใช้งานอยู่แล้ว",
+      table: tableBefore,
+    };
+  }
+
+  if (
+    Number(
+      assignment.active_same_evaluator_count,
+    ) > 0
+  ) {
+    return {
+      ok: false,
+      type: "warning",
+      message:
+        "ผู้ประเมินคนนี้ถูกกำหนดเป็นผู้ประเมินที่ใช้งานอยู่แล้ว",
+      table: tableBefore,
+    };
+  }
+
+  await pool
+    .request()
+    .input(
+      "assignment_id",
+      sql.Int,
+      assignmentId,
+    )
+    .query(`
+      UPDATE dbo.competency_evaluator_assignment
+      SET status_type = 0,
+          submitted_date = NULL
+      WHERE assignment_id =
+            @assignment_id
+        AND status_type = 9;
+    `);
+
+  revalidatePath(
+    "/admin/assignments",
+  );
+  revalidatePath(
+    "/admin/round-readiness",
+  );
+  revalidatePath(
+    "/admin/round-issues",
+  );
+
+  const table =
+    await getAssignmentsTablePayload(
+      inputState,
+    );
+
+  return {
+    ok: true,
+    type: "success",
+    message:
+      "เปิดใช้งานผู้ประเมินเรียบร้อยแล้ว",
+    table,
+  };
+}
+
 async function cancelEmployeeAssignmentsClient(
   roundEmployeeId: number,
   inputState: AssignmentTableState,
@@ -1964,20 +3055,34 @@ export default async function AssignmentsPage({
 
   const [
     rounds,
-    roundEmployeeOptions,
-    evaluatorOptions,
     existingAssignmentRules,
     tableDivisionRows,
     assignmentPage,
     editAssignment,
   ] = await Promise.all([
     getRounds(),
-    getRoundEmployeeOptions(),
-    getEvaluatorOptions(),
     getExistingAssignmentRules(),
     getTableDivisionOptions(),
-    getAssignmentsPage(tableState),
-    getAssignmentForEdit(assignmentEditFromCookie?.assignment_id || 0),
+    getAssignmentsPage(
+      tableState,
+    ),
+    getAssignmentForEdit(
+      assignmentEditFromCookie
+        ?.assignment_id || 0,
+    ),
+  ]);
+
+  /*
+    สองรายการนี้อ่านบุคลากรจาก PYREXT จำนวนมาก
+    จึงแยกออกจากชุด Query ด้านบน
+    เพื่อลดภาระ SQL Server พร้อมกัน
+  */
+  const [
+    roundEmployeeOptions,
+    evaluatorOptions,
+  ] = await Promise.all([
+    getRoundEmployeeOptions(),
+    getEvaluatorOptions(),
   ]);
 
   const draftRoundOptions = rounds
@@ -2013,7 +3118,7 @@ export default async function AssignmentsPage({
       row.section_name ||
       row.section_code ||
       "ไม่ระบุหน่วยงาน",
-    employee_label: `${row.employee_full_name} (${row.payroll_no}) • ${row.section_name || row.section_code || "ไม่ระบุหน่วยงาน"}`,
+    employee_label: `${row.employee_full_name} (${row.payroll_no}) • ${row.rank_group_name || row.rank_name || "ไม่ระบุกลุ่มระดับ"} • ${row.division_name || row.division_code || "ไม่ระบุกลุ่มงาน"} • ${row.section_name || row.section_code || "ไม่ระบุหน่วยงาน"}`,
   }));
 
   const roundEmployeeDivisionOptions = Array.from(
@@ -2039,7 +3144,7 @@ export default async function AssignmentsPage({
     payroll_no: row.payroll_no,
     rank_order: row.rank_order,
     division_code: String(row.division_code || "").trim(),
-    evaluator_label: `${row.evaluator_full_name} (${row.payroll_no}) • ${row.division_name || row.division_code || "ไม่ระบุกลุ่มงาน"}`,
+    evaluator_label: `${row.evaluator_full_name} (${row.payroll_no}) • ${row.rank_group_name || row.rank_name || "ไม่ระบุกลุ่มระดับ"} • ${row.division_name || row.division_code || "ไม่ระบุกลุ่มงาน"}`,
   }));
 
   const prefillRoundEmployee = assignmentPrefillFromCookie
@@ -2248,6 +3353,7 @@ export default async function AssignmentsPage({
         loadTableAction={loadAssignmentsTableClient}
         toggleEvaluatorRequiredTypeAction={toggleEvaluatorRequiredTypeClient}
         cancelEmployeeAssignmentsAction={cancelEmployeeAssignmentsClient}
+        reactivateAssignmentAction={reactivateAssignmentClient}
         selectAssignmentForEditAction={selectAssignmentForEdit}
       />
     </>

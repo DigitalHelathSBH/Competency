@@ -82,6 +82,79 @@ function getRoundStatusBadge(statusType: number) {
 
 const ROUND_EDIT_COOKIE = "competency_round_edit_id";
 
+
+type RoundModuleStatusRow = {
+  round_id: number;
+  competency_status_type: number;
+  kpi_status_type: number;
+};
+
+type RoundWithModuleStatus = Awaited<ReturnType<typeof getRounds>>[number] & {
+  competency_status_type: number;
+  kpi_status_type: number;
+};
+
+function moduleStatusText(statusType: number) {
+  if (statusType === 0) return "ยังไม่เปิด";
+  if (statusType === 1) return "เปิดประเมิน";
+  if (statusType === 2) return "ปิดประเมิน";
+  return "ไม่ทราบสถานะ";
+}
+
+function getModuleStatusBadge(statusType: number) {
+  if (statusType === 0) {
+    return "inline-flex rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-300";
+  }
+
+  if (statusType === 1) {
+    return "inline-flex rounded-full bg-[#1ab394]/10 px-2.5 py-1 text-xs font-medium text-[#1ab394]";
+  }
+
+  if (statusType === 2) {
+    return "inline-flex rounded-full bg-[#23c6c8]/10 px-2.5 py-1 text-xs font-medium text-[#23c6c8]";
+  }
+
+  return "inline-flex rounded-full bg-[#ed5565]/10 px-2.5 py-1 text-xs font-medium text-[#ed5565]";
+}
+
+async function getRoundModuleStatuses(): Promise<RoundModuleStatusRow[]> {
+  const pool = await getDbPool();
+
+  const result = await pool.request().query(`
+    SELECT
+      r.round_id,
+      ISNULL(
+        MAX(
+          CASE
+            WHEN m.module_type = 'COMPETENCY'
+            THEN m.status_type
+          END
+        ),
+        0
+      ) AS competency_status_type,
+      ISNULL(
+        MAX(
+          CASE
+            WHEN m.module_type = 'KPI'
+            THEN m.status_type
+          END
+        ),
+        0
+      ) AS kpi_status_type
+    FROM dbo.competency_round r
+    LEFT JOIN dbo.performance_round_module m
+      ON m.round_id = r.round_id
+    WHERE r.status_type <> 9
+    GROUP BY r.round_id;
+  `);
+
+  return result.recordset.map((row) => ({
+    round_id: Number(row.round_id),
+    competency_status_type: Number(row.competency_status_type || 0),
+    kpi_status_type: Number(row.kpi_status_type || 0),
+  }));
+}
+
 function getRoundOptionLabel(round: {
   round_code: string;
   status_type: number;
@@ -851,10 +924,10 @@ export default async function AdminRoundsPage({
     redirectWithAlert("success", `คัดลอกจากรอบก่อนเรียบร้อยแล้ว (${summary})`);
   }
 
-  async function openDraftRound(formData: FormData) {
+  async function openCompetencyModule(formData: FormData) {
     "use server";
 
-    await requireAdminSession();
+    const currentSession = await requireAdminSession();
 
     const roundId = Number(formData.get("round_id") || 0);
     if (!Number.isInteger(roundId) || roundId <= 0) {
@@ -873,9 +946,18 @@ export default async function AdminRoundsPage({
         new sql.Request(transaction).input("round_id", sql.Int, roundId);
 
       const roundResult = await request().query(`
-        SELECT TOP 1 round_id, round_code, start_date, status_type
-        FROM dbo.competency_round WITH (UPDLOCK, HOLDLOCK)
-        WHERE round_id = @round_id;
+        SELECT TOP (1)
+          r.round_id,
+          r.round_code,
+          r.start_date,
+          r.status_type AS round_status_type,
+          m.status_type AS module_status_type
+        FROM dbo.competency_round r WITH (UPDLOCK, HOLDLOCK)
+        JOIN dbo.performance_round_module m WITH (UPDLOCK, HOLDLOCK)
+          ON m.round_id = r.round_id
+         AND m.module_type = 'COMPETENCY'
+        WHERE r.round_id = @round_id
+          AND r.status_type <> 9;
       `);
 
       const round = roundResult.recordset[0];
@@ -884,9 +966,9 @@ export default async function AdminRoundsPage({
         alertType = "error";
         alertMessage = "ไม่พบรอบประเมิน";
         await transaction.rollback();
-      } else if (Number(round.status_type) !== 0) {
+      } else if (Number(round.module_status_type) !== 0) {
         alertType = "warning";
-        alertMessage = "เปิดได้เฉพาะรอบที่ยังเป็นสถานะร่างเท่านั้น";
+        alertMessage = "Competency ของรอบนี้ไม่ได้อยู่ในสถานะยังไม่เปิด";
         await transaction.rollback();
       } else {
         const problems: string[] = [];
@@ -1397,11 +1479,18 @@ export default async function AdminRoundsPage({
           await transaction.rollback();
         } else {
           const copyResult = await request().query(`
-            DELETE FROM dbo.competency_round_question
-            WHERE round_id = @round_id;
+            DECLARE @snapshot_source TABLE
+            (
+              position_code varchar(20) NULL,
+              question_no int NOT NULL,
+              question_version_id int NOT NULL,
+              max_score decimal(8,2) NOT NULL,
+              weight_percent decimal(5,2) NOT NULL
+            );
 
             WITH round_positions AS (
-              SELECT DISTINCT NULLIF(LTRIM(RTRIM(position_code)), '') AS position_code
+              SELECT DISTINCT
+                NULLIF(LTRIM(RTRIM(position_code)), '') AS position_code
               FROM dbo.competency_round_employee
               WHERE round_id = @round_id
                 AND status_type <> 9
@@ -1448,29 +1537,27 @@ export default async function AdminRoundsPage({
                AND qv.active_status = 1
               WHERE m.active_status = 1
             )
-            INSERT INTO dbo.competency_round_question
-              (
-                round_id,
-                position_code,
-                question_no,
-                question_version_id,
-                max_score,
-                weight_percent,
-                active_status,
-                created_by
-              )
+            INSERT INTO @snapshot_source
+            (
+              position_code,
+              question_no,
+              question_version_id,
+              max_score,
+              weight_percent
+            )
             SELECT
-              @round_id,
               rp.position_code,
               cq.question_no,
               cq.question_version_id,
               cq.max_score,
               CAST(
-                CASE WHEN ISNULL(pc.profession_count, 0) = 3 THEN 15 ELSE 25 END
+                CASE
+                  WHEN ISNULL(pc.profession_count, 0) = 3
+                    THEN 15
+                  ELSE 25
+                END
                 AS decimal(5,2)
-              ) AS weight_percent,
-              1,
-              NULL
+              )
             FROM round_positions rp
             JOIN profession_counts pc
               ON pc.position_code = rp.position_code
@@ -1479,14 +1566,18 @@ export default async function AdminRoundsPage({
             UNION ALL
 
             SELECT
-              @round_id,
               rp.position_code,
               pq.question_no,
               pq.question_version_id,
               pq.max_score,
-              CAST(CASE WHEN pq.question_no = 7 THEN 10 ELSE 15 END AS decimal(5,2)),
-              1,
-              NULL
+              CAST(
+                CASE
+                  WHEN pq.question_no = 7
+                    THEN 10
+                  ELSE 15
+                END
+                AS decimal(5,2)
+              )
             FROM round_positions rp
             JOIN profession_counts pc
               ON pc.position_code = rp.position_code
@@ -1494,22 +1585,113 @@ export default async function AdminRoundsPage({
             JOIN profession_current pq
               ON pq.position_code = rp.position_code;
 
-            SELECT @@ROWCOUNT AS copied_question_count;
+            /*
+              ป้องกันข้อมูลจริงเดิม:
+              ถ้ามี Snapshot เดิมแต่รายละเอียดไม่ตรง จะหยุดเปิดรอบ
+              โดยไม่ลบและไม่เขียนทับข้อมูลเดิม
+            */
+            IF EXISTS
+            (
+              SELECT 1
+              FROM @snapshot_source src
+              JOIN dbo.competency_round_question existing
+                ON existing.round_id = @round_id
+               AND ISNULL(LTRIM(RTRIM(existing.position_code)), '')
+                   = ISNULL(LTRIM(RTRIM(src.position_code)), '')
+               AND existing.question_no = src.question_no
+              WHERE existing.active_status <> 1
+                 OR existing.question_version_id <> src.question_version_id
+                 OR ABS(CAST(existing.max_score AS decimal(10,2)) - src.max_score) >= 0.01
+                 OR ABS(CAST(existing.weight_percent AS decimal(10,2)) - src.weight_percent) >= 0.01
+            )
+            BEGIN
+              THROW 52800,
+                    N'พบ Snapshot หัวข้อของรอบเดิมที่ไม่ตรงกับการตั้งค่าปัจจุบัน ระบบไม่ได้ลบหรือเขียนทับข้อมูลเดิม',
+                    1;
+            END;
+
+            INSERT INTO dbo.competency_round_question
+            (
+              round_id,
+              position_code,
+              question_no,
+              question_version_id,
+              max_score,
+              weight_percent,
+              active_status,
+              created_by
+            )
+            SELECT
+              @round_id,
+              src.position_code,
+              src.question_no,
+              src.question_version_id,
+              src.max_score,
+              src.weight_percent,
+              1,
+              NULL
+            FROM @snapshot_source src
+            WHERE NOT EXISTS
+            (
+              SELECT 1
+              FROM dbo.competency_round_question existing
+              WHERE existing.round_id = @round_id
+                AND ISNULL(LTRIM(RTRIM(existing.position_code)), '')
+                    = ISNULL(LTRIM(RTRIM(src.position_code)), '')
+                AND existing.question_no = src.question_no
+            );
+
+            DECLARE @inserted_question_count int = @@ROWCOUNT;
+
+            IF EXISTS
+            (
+              SELECT 1
+              FROM @snapshot_source src
+              WHERE NOT EXISTS
+              (
+                SELECT 1
+                FROM dbo.competency_round_question existing
+                WHERE existing.round_id = @round_id
+                  AND ISNULL(LTRIM(RTRIM(existing.position_code)), '')
+                      = ISNULL(LTRIM(RTRIM(src.position_code)), '')
+                  AND existing.question_no = src.question_no
+                  AND existing.active_status = 1
+              )
+            )
+            BEGIN
+              THROW 52801,
+                    N'ไม่สามารถสร้าง Snapshot หัวข้อ Competency ได้ครบ โดยข้อมูลเดิมยังคงอยู่ทั้งหมด',
+                    1;
+            END;
+
+            SELECT
+              @inserted_question_count AS inserted_question_count,
+              COUNT(*) AS total_question_count
+            FROM dbo.competency_round_question
+            WHERE round_id = @round_id
+              AND active_status = 1;
           `);
 
-          const copiedQuestionCount = Number(
-            copyResult.recordset[0]?.copied_question_count || 0,
+          const insertedQuestionCount = Number(
+            copyResult.recordset[0]?.inserted_question_count || 0,
+          );
+          const totalQuestionCount = Number(
+            copyResult.recordset[0]?.total_question_count || 0,
           );
 
-          await request().query(`
-            UPDATE dbo.competency_round
-            SET status_type = 1
-            WHERE round_id = @round_id
-              AND status_type = 0;
-          `);
+          await new sql.Request(transaction)
+            .input("round_id", sql.Int, roundId)
+            .input("changed_by", sql.VarChar(20), currentSession.emp_id)
+            .query(`
+              EXEC dbo.sp_performance_set_module_status
+                   @round_id = @round_id,
+                   @module_type = 'COMPETENCY',
+                   @new_status_type = 1,
+                   @changed_by = @changed_by;
+            `);
 
           await transaction.commit();
-          alertMessage = `เปิดรอบประเมินเรียบร้อยแล้ว และล็อกหัวข้อประเมิน ${copiedQuestionCount.toLocaleString()} รายการ`;
+          alertMessage = `เปิด Competency เรียบร้อยแล้ว มี Snapshot หัวข้อ ${totalQuestionCount.toLocaleString()} รายการ และเพิ่มเฉพาะรายการใหม่ ${insertedQuestionCount.toLocaleString()} รายการ`;
         }
       }
     } catch (error) {
@@ -1521,7 +1703,7 @@ export default async function AdminRoundsPage({
 
       console.error(error);
       alertType = "error";
-      alertMessage = "ไม่สามารถเปิดรอบประเมินได้";
+      alertMessage = "ไม่สามารถเปิด Competency ได้";
     }
 
     revalidatePath("/admin/rounds");
@@ -1529,11 +1711,476 @@ export default async function AdminRoundsPage({
     revalidatePath("/admin/round-issues");
     revalidatePath("/admin/questions");
     revalidatePath("/admin/profession-questions");
+    revalidatePath("/evaluations");
 
     redirectWithAlert(alertType, alertMessage);
   }
 
-  const rounds = await safeFetch(() => getRounds(), []);
+
+
+  async function openKpiModule(formData: FormData) {
+    "use server";
+
+    const currentSession = await requireAdminSession();
+    const roundId = Number(formData.get("round_id") || 0);
+
+    if (!Number.isInteger(roundId) || roundId <= 0) {
+      redirectWithAlert("error", "ข้อมูลรอบประเมินไม่ถูกต้อง");
+    }
+
+    const pool = await getDbPool();
+    const transaction = new sql.Transaction(pool);
+    let alertType: "success" | "error" | "warning" | "info" = "success";
+    let alertMessage = "เปิด KPI เรียบร้อยแล้ว";
+
+    try {
+      await transaction.begin();
+
+      const roundResult = await new sql.Request(transaction)
+        .input("round_id", sql.Int, roundId)
+        .query(`
+          SELECT TOP (1)
+            r.round_id,
+            r.round_code,
+            r.status_type AS round_status_type,
+            m.status_type AS module_status_type
+          FROM dbo.competency_round r WITH (UPDLOCK, HOLDLOCK)
+          JOIN dbo.performance_round_module m WITH (UPDLOCK, HOLDLOCK)
+            ON m.round_id = r.round_id
+           AND m.module_type = 'KPI'
+          WHERE r.round_id = @round_id
+            AND r.status_type <> 9;
+        `);
+
+      const round = roundResult.recordset[0];
+
+      if (!round) {
+        alertType = "error";
+        alertMessage = "ไม่พบรอบประเมินหรือสถานะ KPI";
+        await transaction.rollback();
+      } else if (Number(round.module_status_type) !== 0) {
+        alertType = "warning";
+        alertMessage = "KPI ของรอบนี้ไม่ได้อยู่ในสถานะยังไม่เปิด";
+        await transaction.rollback();
+      } else {
+        const problems: string[] = [];
+        const request = () =>
+          new sql.Request(transaction).input("round_id", sql.Int, roundId);
+
+        const employeeFormResult = await request().query(`
+          SELECT
+            COUNT(*) AS total_employee,
+            SUM(
+              CASE
+                WHEN re.competency_percent IS NULL
+                  OR re.competency_percent < 0
+                  OR re.competency_percent > 100
+                THEN 1
+                ELSE 0
+              END
+            ) AS invalid_percent_count,
+            SUM(CASE WHEN ef.employee_form_id IS NULL THEN 1 ELSE 0 END)
+              AS missing_form_count,
+            SUM(
+              CASE
+                WHEN ef.employee_form_id IS NOT NULL
+                 AND (
+                   f.active_status <> 1
+                   OR fv.status_type <> 1
+                   OR fv.total_weight_percent <> 100
+                   OR ISNULL(item_summary.item_count, 0) = 0
+                   OR ISNULL(item_summary.item_weight_total, 0) <> 100
+                 )
+                THEN 1
+                ELSE 0
+              END
+            ) AS invalid_form_count,
+            SUM(
+              CASE
+                WHEN ef.employee_form_id IS NOT NULL
+                 AND fv.scope_type = 2
+                 AND NOT EXISTS
+                 (
+                   SELECT 1
+                   FROM dbo.kpi_form_scope fs
+                   WHERE fs.form_version_id = fv.form_version_id
+                     AND LTRIM(RTRIM(fs.division_code))
+                         = LTRIM(RTRIM(ISNULL(re.division_code, '')))
+                 )
+                THEN 1
+                ELSE 0
+              END
+            ) AS scope_mismatch_count
+          FROM dbo.competency_round_employee re
+          LEFT JOIN dbo.kpi_employee_form ef
+            ON ef.round_employee_id = re.round_employee_id
+           AND ef.status_type = 0
+          LEFT JOIN dbo.kpi_form_version fv
+            ON fv.form_version_id = ef.form_version_id
+          LEFT JOIN dbo.kpi_form f
+            ON f.form_id = fv.form_id
+          OUTER APPLY
+          (
+            SELECT
+              COUNT(*) AS item_count,
+              SUM(fi.weight_percent) AS item_weight_total
+            FROM dbo.kpi_form_item fi
+            WHERE fi.form_version_id = fv.form_version_id
+          ) item_summary
+          WHERE re.round_id = @round_id
+            AND re.status_type <> 9;
+        `);
+
+        const employeeFormCheck = employeeFormResult.recordset[0] || {};
+        const totalEmployee = Number(employeeFormCheck.total_employee || 0);
+
+        if (totalEmployee === 0) {
+          problems.push("ยังไม่มีผู้ถูกประเมินในรอบ");
+        }
+        if (Number(employeeFormCheck.invalid_percent_count || 0) > 0) {
+          problems.push(
+            `มีผู้ถูกประเมินที่สัดส่วน Competency ไม่ถูกต้อง ${Number(
+              employeeFormCheck.invalid_percent_count,
+            ).toLocaleString()} คน`,
+          );
+        }
+        if (Number(employeeFormCheck.missing_form_count || 0) > 0) {
+          problems.push(
+            `มีผู้ถูกประเมินที่ยังไม่มีแบบฟอร์ม KPI ${Number(
+              employeeFormCheck.missing_form_count,
+            ).toLocaleString()} คน`,
+          );
+        }
+        if (Number(employeeFormCheck.invalid_form_count || 0) > 0) {
+          problems.push(
+            `มีแบบฟอร์ม KPI ที่ยังไม่พร้อมใช้งานหรือน้ำหนักไม่ครบ 100% ${Number(
+              employeeFormCheck.invalid_form_count,
+            ).toLocaleString()} คน`,
+          );
+        }
+        if (Number(employeeFormCheck.scope_mismatch_count || 0) > 0) {
+          problems.push(
+            `มีแบบฟอร์ม KPI ที่ไม่ครอบคลุมกลุ่มงานของผู้ถูกประเมิน ${Number(
+              employeeFormCheck.scope_mismatch_count,
+            ).toLocaleString()} คน`,
+          );
+        }
+
+        const indicatorResult = await request().query(`
+          SELECT COUNT(DISTINCT fi.form_item_id) AS invalid_item_count
+          FROM dbo.competency_round_employee re
+          JOIN dbo.kpi_employee_form ef
+            ON ef.round_employee_id = re.round_employee_id
+           AND ef.status_type = 0
+          JOIN dbo.kpi_form_item fi
+            ON fi.form_version_id = ef.form_version_id
+          JOIN dbo.kpi_indicator_version iv
+            ON iv.indicator_version_id = fi.indicator_version_id
+          JOIN dbo.kpi_indicator i
+            ON i.indicator_id = iv.indicator_id
+          OUTER APPLY
+          (
+            SELECT COUNT(*) AS rule_count
+            FROM dbo.kpi_indicator_rule rule_item
+            WHERE rule_item.indicator_version_id = iv.indicator_version_id
+          ) rule_summary
+          WHERE re.round_id = @round_id
+            AND re.status_type <> 9
+            AND (
+              i.active_status <> 1
+              OR iv.status_type <> 1
+              OR ISNULL(rule_summary.rule_count, 0) = 0
+            );
+        `);
+
+        if (Number(indicatorResult.recordset[0]?.invalid_item_count || 0) > 0) {
+          problems.push("มีตัวชี้วัด KPI ที่ยังไม่พร้อมใช้งานหรือยังไม่มีเกณฑ์คะแนน");
+        }
+
+        const evaluatorResult = await request().query(`
+          SELECT
+            SUM(CASE WHEN k.kpi_assignment_id IS NULL THEN 1 ELSE 0 END)
+              AS missing_evaluator_count,
+            SUM(
+              CASE
+                WHEN k.kpi_assignment_id IS NOT NULL
+                 AND LTRIM(RTRIM(k.evaluator_payroll_no))
+                     = LTRIM(RTRIM(re.payroll_no))
+                THEN 1
+                ELSE 0
+              END
+            ) AS self_assignment_count,
+            SUM(
+              CASE
+                WHEN k.kpi_assignment_id IS NOT NULL
+                 AND (ev.PAYROLLNO IS NULL OR ev.TERMINATEDATE IS NOT NULL)
+                THEN 1
+                ELSE 0
+              END
+            ) AS invalid_evaluator_count,
+            SUM(
+              CASE
+                WHEN k.kpi_assignment_id IS NOT NULL
+                 AND k.weight_percent <> 100
+                THEN 1
+                ELSE 0
+              END
+            ) AS invalid_weight_count,
+            SUM(
+              CASE
+                WHEN k.assignment_source_type = 'AUTO_COMPETENCY'
+                 AND (
+                   source_assignment.assignment_id IS NULL
+                   OR source_assignment.evaluator_level <> 1
+                   OR source_assignment.status_type = 9
+                   OR LTRIM(RTRIM(source_assignment.evaluator_payroll_no))
+                      <> LTRIM(RTRIM(k.evaluator_payroll_no))
+                 )
+                THEN 1
+                ELSE 0
+              END
+            ) AS invalid_auto_source_count
+          FROM dbo.competency_round_employee re
+          LEFT JOIN dbo.kpi_evaluator_assignment k
+            ON k.round_employee_id = re.round_employee_id
+           AND k.status_type = 0
+          LEFT JOIN dbo.competency_evaluator_assignment source_assignment
+            ON source_assignment.assignment_id = k.source_competency_assignment_id
+          LEFT JOIN ${ssbDb()}.dbo.PYREXT ev
+            ON LTRIM(RTRIM(CAST(ev.PAYROLLNO AS varchar(20))))
+               = LTRIM(RTRIM(k.evaluator_payroll_no))
+          WHERE re.round_id = @round_id
+            AND re.status_type <> 9;
+        `);
+
+        const evaluatorCheck = evaluatorResult.recordset[0] || {};
+        if (Number(evaluatorCheck.missing_evaluator_count || 0) > 0) {
+          problems.push(
+            `มีผู้ถูกประเมินที่ยังไม่มีผู้ประเมิน KPI ${Number(
+              evaluatorCheck.missing_evaluator_count,
+            ).toLocaleString()} คน`,
+          );
+        }
+        if (Number(evaluatorCheck.self_assignment_count || 0) > 0) {
+          problems.push("มีรายการ KPI ที่ผู้ประเมินเป็นคนเดียวกับผู้ถูกประเมิน");
+        }
+        if (Number(evaluatorCheck.invalid_evaluator_count || 0) > 0) {
+          problems.push("มีผู้ประเมิน KPI ที่พ้นสภาพหรือไม่พบข้อมูลบุคลากร");
+        }
+        if (Number(evaluatorCheck.invalid_weight_count || 0) > 0) {
+          problems.push("มีผู้ประเมิน KPI ที่น้ำหนักไม่เท่ากับ 100%");
+        }
+        if (Number(evaluatorCheck.invalid_auto_source_count || 0) > 0) {
+          problems.push("มีผู้ประเมิน KPI อัตโนมัติที่ไม่ตรงกับหัวหน้าใกล้ชิด Competency");
+        }
+
+        if (problems.length > 0) {
+          alertType = "warning";
+          alertMessage = `ยังเปิด KPI ไม่ได้: ${problems.slice(0, 5).join(" / ")}${
+            problems.length > 5 ? " ..." : ""
+          }`;
+          await transaction.rollback();
+        } else {
+          await new sql.Request(transaction)
+            .input("round_id", sql.Int, roundId)
+            .input("changed_by", sql.VarChar(20), currentSession.emp_id)
+            .query(`
+              EXEC dbo.sp_performance_set_module_status
+                   @round_id = @round_id,
+                   @module_type = 'KPI',
+                   @new_status_type = 1,
+                   @changed_by = @changed_by;
+            `);
+
+          await transaction.commit();
+        }
+      }
+    } catch (error) {
+      try {
+        await transaction.rollback();
+      } catch {
+        // ignore rollback error
+      }
+
+      console.error(error);
+      alertType = "error";
+      alertMessage = "ไม่สามารถเปิด KPI ได้";
+    }
+
+    revalidatePath("/admin/rounds");
+    revalidatePath("/admin/kpi-employee-forms");
+    revalidatePath("/admin/kpi-assignments");
+    revalidatePath("/kpi-evaluations");
+    revalidatePath("/kpi-reports");
+    revalidatePath("/performance-reports");
+
+    redirectWithAlert(alertType, alertMessage);
+  }
+
+  async function closeRoundModule(formData: FormData) {
+    "use server";
+
+    const currentSession = await requireAdminSession();
+    const roundId = Number(formData.get("round_id") || 0);
+    const moduleType = String(formData.get("module_type") || "")
+      .trim()
+      .toUpperCase();
+
+    if (!Number.isInteger(roundId) || roundId <= 0) {
+      redirectWithAlert("error", "ข้อมูลรอบประเมินไม่ถูกต้อง");
+    }
+
+    if (moduleType !== "COMPETENCY" && moduleType !== "KPI") {
+      redirectWithAlert("error", "ประเภทการประเมินไม่ถูกต้อง");
+    }
+
+    const pool = await getDbPool();
+    const transaction = new sql.Transaction(pool);
+    let alertType: "success" | "error" | "warning" | "info" = "success";
+    let alertMessage =
+      moduleType === "COMPETENCY"
+        ? "ปิด Competency เรียบร้อยแล้ว"
+        : "ปิด KPI เรียบร้อยแล้ว";
+
+    try {
+      await transaction.begin();
+
+      const moduleResult = await new sql.Request(transaction)
+        .input("round_id", sql.Int, roundId)
+        .input("module_type", sql.VarChar(20), moduleType)
+        .query(`
+          SELECT TOP (1)
+            m.status_type
+          FROM dbo.performance_round_module m WITH (UPDLOCK, HOLDLOCK)
+          JOIN dbo.competency_round r
+            ON r.round_id = m.round_id
+           AND r.status_type <> 9
+          WHERE m.round_id = @round_id
+            AND m.module_type = @module_type;
+        `);
+
+      const moduleRow = moduleResult.recordset[0];
+
+      if (!moduleRow) {
+        alertType = "error";
+        alertMessage = "ไม่พบสถานะการประเมินของรอบนี้";
+        await transaction.rollback();
+      } else if (Number(moduleRow.status_type) !== 1) {
+        alertType = "warning";
+        alertMessage = "ปิดได้เฉพาะส่วนที่กำลังเปิดประเมินอยู่เท่านั้น";
+        await transaction.rollback();
+      } else {
+        let pendingCount = 0;
+
+        if (moduleType === "COMPETENCY") {
+          const pendingResult = await new sql.Request(transaction)
+            .input("round_id", sql.Int, roundId)
+            .query(`
+              SELECT COUNT(*) AS pending_count
+              FROM dbo.competency_evaluator_assignment a
+              JOIN dbo.competency_round_employee re
+                ON re.round_employee_id = a.round_employee_id
+               AND re.round_id = @round_id
+               AND re.status_type <> 9
+              WHERE a.status_type <> 9
+                AND NOT EXISTS
+                (
+                  SELECT 1
+                  FROM dbo.competency_evaluation ev
+                  WHERE ev.assignment_id = a.assignment_id
+                    AND ev.status_type = 1
+                );
+            `);
+
+          pendingCount = Number(pendingResult.recordset[0]?.pending_count || 0);
+        } else {
+          const pendingResult = await new sql.Request(transaction)
+            .input("round_id", sql.Int, roundId)
+            .query(`
+              SELECT COUNT(*) AS pending_count
+              FROM dbo.kpi_evaluator_assignment k
+              JOIN dbo.competency_round_employee re
+                ON re.round_employee_id = k.round_employee_id
+               AND re.round_id = @round_id
+               AND re.status_type <> 9
+              JOIN dbo.kpi_employee_form ef
+                ON ef.round_employee_id = re.round_employee_id
+               AND ef.status_type = 0
+              WHERE k.status_type = 0
+                AND NOT EXISTS
+                (
+                  SELECT 1
+                  FROM dbo.kpi_evaluation ev
+                  WHERE ev.employee_form_id = ef.employee_form_id
+                    AND ev.kpi_assignment_id = k.kpi_assignment_id
+                    AND ev.status_type = 1
+                );
+            `);
+
+          pendingCount = Number(pendingResult.recordset[0]?.pending_count || 0);
+        }
+
+        if (pendingCount > 0) {
+          alertType = "warning";
+          alertMessage = `ยังปิดไม่ได้ มีรายการที่ยังไม่ส่งผล ${pendingCount.toLocaleString()} รายการ`;
+          await transaction.rollback();
+        } else {
+          await new sql.Request(transaction)
+            .input("round_id", sql.Int, roundId)
+            .input("module_type", sql.VarChar(20), moduleType)
+            .input("changed_by", sql.VarChar(20), currentSession.emp_id)
+            .query(`
+              EXEC dbo.sp_performance_set_module_status
+                   @round_id = @round_id,
+                   @module_type = @module_type,
+                   @new_status_type = 2,
+                   @changed_by = @changed_by;
+            `);
+
+          await transaction.commit();
+        }
+      }
+    } catch (error) {
+      try {
+        await transaction.rollback();
+      } catch {
+        // ignore rollback error
+      }
+
+      console.error(error);
+      alertType = "error";
+      alertMessage = "ไม่สามารถปิดการประเมินได้";
+    }
+
+    revalidatePath("/admin/rounds");
+    revalidatePath("/evaluations");
+    revalidatePath("/kpi-evaluations");
+    revalidatePath("/reports");
+    revalidatePath("/kpi-reports");
+    revalidatePath("/performance-reports");
+
+    redirectWithAlert(alertType, alertMessage);
+  }
+  const [baseRounds, moduleStatuses] = await Promise.all([
+    safeFetch(() => getRounds(), []),
+    safeFetch(() => getRoundModuleStatuses(), []),
+  ]);
+
+  const moduleStatusMap = new Map(
+    moduleStatuses.map((item) => [item.round_id, item]),
+  );
+
+  const rounds: RoundWithModuleStatus[] = baseRounds.map((round) => {
+    const moduleStatus = moduleStatusMap.get(Number(round.round_id));
+
+    return {
+      ...round,
+      competency_status_type: Number(
+        moduleStatus?.competency_status_type || 0,
+      ),
+      kpi_status_type: Number(moduleStatus?.kpi_status_type || 0),
+    };
+  });
 
   const defaultRoundYear = getCurrentFiscalYearBE();
   const draftRounds = rounds.filter((round) => Number(round.status_type) === 0);
@@ -1592,8 +2239,15 @@ export default async function AdminRoundsPage({
 
       <PageHeader
         title="จัดการรอบประเมิน"
-        description="สร้างและแก้ไขรอบประเมิน เช่น 2569/1, 2569/2"
+        description="แต่ละรอบเปิดและปิด Competency กับ KPI แยกกันได้ โดยยังคงปีละ 2 รอบ"
       />
+
+
+      <div className="mb-6 rounded-2xl border border-blue-100 bg-blue-50 px-5 py-4 text-sm leading-6 text-blue-800 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-200">
+        การเปิด Competency จะไม่ลบหรือเขียนทับข้อมูลตั้งค่าจริงเดิม ระบบจะเพิ่ม Snapshot
+        เฉพาะหัวข้อที่ยังไม่มีเท่านั้น ส่วน KPI จะตรวจความพร้อมของแบบฟอร์ม ตัวชี้วัด
+        และผู้ประเมินก่อนเปิด
+      </div>
 
       <RoundTemplateCopyForm
         targetRoundOptions={templateTargetRoundOptions}
@@ -1773,23 +2427,30 @@ export default async function AdminRoundsPage({
           <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-800">
             <thead className="bg-gray-50 dark:bg-gray-900/40">
               <tr>
-                {["รอบ", "วันที่เริ่ม", "วันที่สิ้นสุด", "สถานะ", "จัดการ"].map(
-                  (h) => (
-                    <th
-                      key={h}
-                      className="px-5 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400"
-                    >
-                      {h}
-                    </th>
-                  ),
-                )}
+                {[
+                  "รอบ",
+                  "วันที่เริ่ม",
+                  "วันที่สิ้นสุด",
+                  "สถานะรอบ",
+                  "Competency",
+                  "KPI",
+                  "จัดการ",
+                ].map((header) => (
+                  <th
+                    key={header}
+                    className="whitespace-nowrap px-5 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400"
+                  >
+                    {header}
+                  </th>
+                ))}
               </tr>
             </thead>
+
             <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
               {rounds.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={5}
+                    colSpan={7}
                     className="px-5 py-8 text-center text-sm text-gray-500"
                   >
                     ยังไม่มีรอบประเมิน
@@ -1797,19 +2458,27 @@ export default async function AdminRoundsPage({
                 </tr>
               ) : (
                 rounds.map((round) => {
-                  const isDraft = Number(round.status_type) === 0;
+                  const competencyStatus = Number(
+                    round.competency_status_type,
+                  );
+                  const kpiStatus = Number(round.kpi_status_type);
+                  const canEditRound =
+                    competencyStatus === 0 && kpiStatus === 0;
 
                   return (
                     <tr key={round.round_id}>
                       <td className="px-5 py-4 text-sm font-medium text-gray-700 dark:text-gray-300">
                         {round.round_code}
                       </td>
-                      <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
+
+                      <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
                         {formatThaiDate(round.start_date, "full")}
                       </td>
-                      <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
+
+                      <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
                         {formatThaiDate(round.end_date, "full")}
                       </td>
+
                       <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
                         <span
                           className={getRoundStatusBadge(
@@ -1819,37 +2488,116 @@ export default async function AdminRoundsPage({
                           {statusText(round.status_type, "round")}
                         </span>
                       </td>
-                      <td className="px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
-                        {isDraft ? (
-                          <div className="flex flex-wrap gap-2">
-                            <form action={startEditRound}>
-                              <input
-                                type="hidden"
-                                name="round_id"
-                                value={round.round_id}
-                              />
-                              <button
-                                type="submit"
-                                className="inline-flex h-9 items-center justify-center rounded-lg bg-[#f8ac59] px-4 text-sm font-medium text-white hover:bg-[#f7a142]"
-                              >
-                                แก้ไข
-                              </button>
-                            </form>
 
-                            <form action={openDraftRound}>
-                              <input
-                                type="hidden"
-                                name="round_id"
-                                value={round.round_id}
-                              />
-                              <button
-                                type="submit"
-                                className="inline-flex h-9 items-center justify-center rounded-lg bg-[#1ab394] px-4 text-sm font-medium text-white hover:bg-[#18a689]"
-                              >
-                                เปิดรอบ
-                              </button>
-                            </form>
-                          </div>
+                      <td className="min-w-52 px-5 py-4 align-top">
+                        <div className="mb-2">
+                          <span className={getModuleStatusBadge(competencyStatus)}>
+                            {moduleStatusText(competencyStatus)}
+                          </span>
+                        </div>
+
+                        {competencyStatus === 0 ? (
+                          <form action={openCompetencyModule}>
+                            <input
+                              type="hidden"
+                              name="round_id"
+                              value={round.round_id}
+                            />
+                            <button
+                              type="submit"
+                              className="inline-flex h-9 items-center justify-center rounded-lg bg-[#1ab394] px-4 text-sm font-medium text-white hover:bg-[#18a689]"
+                            >
+                              เปิด Competency
+                            </button>
+                          </form>
+                        ) : competencyStatus === 1 ? (
+                          <form action={closeRoundModule}>
+                            <input
+                              type="hidden"
+                              name="round_id"
+                              value={round.round_id}
+                            />
+                            <input
+                              type="hidden"
+                              name="module_type"
+                              value="COMPETENCY"
+                            />
+                            <button
+                              type="submit"
+                              className="inline-flex h-9 items-center justify-center rounded-lg bg-[#ed5565] px-4 text-sm font-medium text-white hover:bg-[#e64253]"
+                            >
+                              ปิด Competency
+                            </button>
+                          </form>
+                        ) : (
+                          <span className="text-xs text-gray-500 dark:text-gray-400">
+                            ปิดผลแล้วและไม่สามารถย้อนกลับได้
+                          </span>
+                        )}
+                      </td>
+
+                      <td className="min-w-52 px-5 py-4 align-top">
+                        <div className="mb-2">
+                          <span className={getModuleStatusBadge(kpiStatus)}>
+                            {moduleStatusText(kpiStatus)}
+                          </span>
+                        </div>
+
+                        {kpiStatus === 0 ? (
+                          <form action={openKpiModule}>
+                            <input
+                              type="hidden"
+                              name="round_id"
+                              value={round.round_id}
+                            />
+                            <button
+                              type="submit"
+                              className="inline-flex h-9 items-center justify-center rounded-lg bg-[#23c6c8] px-4 text-sm font-medium text-white hover:bg-[#1fb5b7]"
+                            >
+                              เปิด KPI
+                            </button>
+                          </form>
+                        ) : kpiStatus === 1 ? (
+                          <form action={closeRoundModule}>
+                            <input
+                              type="hidden"
+                              name="round_id"
+                              value={round.round_id}
+                            />
+                            <input
+                              type="hidden"
+                              name="module_type"
+                              value="KPI"
+                            />
+                            <button
+                              type="submit"
+                              className="inline-flex h-9 items-center justify-center rounded-lg bg-[#ed5565] px-4 text-sm font-medium text-white hover:bg-[#e64253]"
+                            >
+                              ปิด KPI
+                            </button>
+                          </form>
+                        ) : (
+                          <span className="text-xs text-gray-500 dark:text-gray-400">
+                            ปิดผลแล้วและไม่สามารถย้อนกลับได้
+                          </span>
+                        )}
+                      </td>
+
+                      <td className="px-5 py-4 align-top text-sm text-gray-700 dark:text-gray-300">
+                        {canEditRound ? (
+                          <form action={startEditRound}>
+                            <input
+                              type="hidden"
+                              name="round_id"
+                              value={round.round_id}
+                            />
+                            <button
+                              type="submit"
+                              className="inline-flex h-9 items-center justify-center rounded-lg bg-[#f8ac59] px-4 text-sm font-medium text-white hover:bg-[#f7a142]"
+                            >
+                              แก้ไข
+                            </button>
+                          </form>
                         ) : (
                           <span className="inline-flex h-9 items-center justify-center rounded-lg bg-gray-100 px-4 text-sm font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-400">
                             ล็อกแล้ว
