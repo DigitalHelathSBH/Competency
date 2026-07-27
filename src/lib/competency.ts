@@ -356,9 +356,8 @@ export async function getEvaluationFormData(
       JOIN dbo.competency_question_version qv
           ON qv.question_version_id = crq.question_version_id
       LEFT JOIN dbo.competency_question_description_version qdv
-          ON qdv.question_no = crq.question_no
+          ON qdv.question_version_id = crq.question_version_id
          AND qdv.rank_group_id = re.rank_group_id
-         AND qdv.is_current = 1
          AND qdv.active_status = 1
       LEFT JOIN dbo.competency_evaluation ev
           ON ev.assignment_id = a.assignment_id
