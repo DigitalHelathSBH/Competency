@@ -864,14 +864,8 @@ export default async function AdminRoundsPage({
               0,
               NULL
             FROM evaluator_resolved e
-            JOIN dbo.competency_rank_group evaluator_group
-              ON evaluator_group.rank_group_id = e.evaluator_rank_group_id
-             AND evaluator_group.active_status = 1
-            JOIN dbo.competency_rank_group employee_group
-              ON employee_group.rank_group_id = e.employee_rank_group_id
-             AND employee_group.active_status = 1
-            WHERE e.employee_payroll_no <> e.evaluator_payroll_no
-              AND evaluator_group.sort_order >= employee_group.sort_order
+            WHERE e.evaluator_rank_group_id IS NOT NULL
+              AND e.employee_payroll_no <> e.evaluator_payroll_no
               AND NOT EXISTS (
                 SELECT 1
                 FROM dbo.competency_evaluator_assignment target_a
@@ -1186,23 +1180,8 @@ export default async function AdminRoundsPage({
                 THEN 1
                 ELSE 0
               END
-            ) AS evaluator_missing_rank_group_count,
-            SUM(
-              CASE
-                WHEN evaluator_group.rank_group_id IS NOT NULL
-                  AND employee_group.rank_group_id IS NOT NULL
-                  AND evaluator_group.sort_order < employee_group.sort_order
-                THEN 1
-                ELSE 0
-              END
-            ) AS evaluator_lower_rank_count
-          FROM evaluator_resolved resolved
-          LEFT JOIN dbo.competency_rank_group evaluator_group
-            ON evaluator_group.rank_group_id = resolved.evaluator_rank_group_id
-           AND evaluator_group.active_status = 1
-          LEFT JOIN dbo.competency_rank_group employee_group
-            ON employee_group.rank_group_id = resolved.employee_rank_group_id
-           AND employee_group.active_status = 1;
+            ) AS evaluator_missing_rank_group_count
+          FROM evaluator_resolved resolved;
         `);
 
         const invalidAssignmentCheck =
@@ -1220,12 +1199,6 @@ export default async function AdminRoundsPage({
         ) {
           problems.push("มีผู้ประเมินที่ยังไม่มีกลุ่มระดับ");
         }
-        if (
-          Number(invalidAssignmentCheck.evaluator_lower_rank_count || 0) > 0
-        ) {
-          problems.push("มีผู้ประเมินที่กลุ่มระดับต่ำกว่าผู้ถูกประเมิน");
-        }
-
         const duplicateAssignmentResult = await request().query(`
           SELECT COUNT(*) AS duplicate_count
           FROM (
