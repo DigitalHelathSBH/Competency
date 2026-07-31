@@ -445,6 +445,81 @@ async function getKpiRows(
 ) {
   const pool = await getDbPool();
 
+  /*
+    ตารางผล KPI ของแต่ละฐานข้อมูลอาจใช้ชื่อคอลัมน์เชื่อมกับ
+    รายการผู้ประเมินไม่เหมือนกัน จึงตรวจโครงสร้างจริงก่อนสร้าง Query
+    เพื่อไม่อ้างคอลัมน์ที่ไม่มีอยู่ และยังเลือกผลของผู้ประเมินที่ใช้งานอยู่
+  */
+  const columnResult = await pool.request().query(`
+    SELECT
+      t.name AS table_name,
+      c.name AS column_name
+    FROM sys.tables t
+    JOIN sys.schemas s
+      ON s.schema_id = t.schema_id
+    JOIN sys.columns c
+      ON c.object_id = t.object_id
+    WHERE s.name = 'dbo'
+      AND t.name IN (
+        'kpi_evaluation',
+        'kpi_evaluator_assignment'
+      );
+  `);
+
+  const evaluationColumns = new Set<string>();
+  const assignmentColumns = new Set<string>();
+
+  for (const row of columnResult.recordset as Array<{
+    table_name: string;
+    column_name: string;
+  }>) {
+    const tableName = String(row.table_name || "").toLowerCase();
+    const columnName = String(row.column_name || "").toLowerCase();
+
+    if (tableName === "kpi_evaluation") {
+      evaluationColumns.add(columnName);
+    }
+
+    if (tableName === "kpi_evaluator_assignment") {
+      assignmentColumns.add(columnName);
+    }
+  }
+
+  let evaluationAssignmentCondition = "";
+
+  if (
+    evaluationColumns.has("kpi_assignment_id") &&
+    assignmentColumns.has("kpi_assignment_id")
+  ) {
+    evaluationAssignmentCondition = `
+      AND ev.kpi_assignment_id =
+          k.kpi_assignment_id
+    `;
+  } else if (
+    evaluationColumns.has("kpi_evaluator_assignment_id") &&
+    assignmentColumns.has("kpi_evaluator_assignment_id")
+  ) {
+    evaluationAssignmentCondition = `
+      AND ev.kpi_evaluator_assignment_id =
+          k.kpi_evaluator_assignment_id
+    `;
+  } else if (
+    evaluationColumns.has("assignment_id") &&
+    assignmentColumns.has("assignment_id")
+  ) {
+    evaluationAssignmentCondition = `
+      AND ev.assignment_id =
+          k.assignment_id
+    `;
+  } else if (
+    evaluationColumns.has("evaluator_payroll_no")
+  ) {
+    evaluationAssignmentCondition = `
+      AND LTRIM(RTRIM(ev.evaluator_payroll_no)) =
+          LTRIM(RTRIM(k.evaluator_payroll_no))
+    `;
+  }
+
   const result = await pool
     .request()
     .input(
@@ -478,14 +553,12 @@ async function getKpiRows(
 
         LTRIM(
           RTRIM(
-            current_kpi_assignment
-              .evaluator_payroll_no
+            k.evaluator_payroll_no
           )
         ) AS evaluator_payroll_no,
 
         ${ssbDb()}.dbo.GetUserFullName(
-          current_kpi_assignment
-            .evaluator_payroll_no
+          k.evaluator_payroll_no
         ) AS evaluator_full_name,
 
         latest_evaluation.status_type
@@ -494,51 +567,25 @@ async function getKpiRows(
         latest_evaluation
           .total_kpi_score
 
-      FROM dbo.competency_round_employee re
+      FROM dbo.kpi_evaluator_assignment k
+
+      JOIN dbo.competency_round_employee re
+        ON re.round_employee_id =
+           k.round_employee_id
+       AND re.status_type <> 9
 
       JOIN dbo.competency_round r
         ON r.round_id = re.round_id
        AND r.status_type <> 9
 
-      CROSS APPLY
-      (
-        SELECT TOP (1)
-          k.kpi_assignment_id,
-          k.evaluator_payroll_no
-        FROM dbo.kpi_evaluator_assignment k
-        WHERE k.round_employee_id =
-              re.round_employee_id
-          AND k.status_type = 0
-          AND
-          (
-            @is_admin = 1
-            OR LTRIM(
-                 RTRIM(
-                   k.evaluator_payroll_no
-                 )
-               ) = @payroll_no
-          )
-        ORDER BY
-          k.kpi_assignment_id DESC
-      ) current_kpi_assignment
-
-      CROSS APPLY
-      (
-        SELECT TOP (1)
-          ef.employee_form_id,
-          ef.form_version_id
-        FROM dbo.kpi_employee_form ef
-        WHERE ef.round_employee_id =
-              re.round_employee_id
-          AND ef.status_type = 0
-        ORDER BY
-          ef.employee_form_id DESC
-      ) current_employee_form
+      JOIN dbo.kpi_employee_form ef
+        ON ef.round_employee_id =
+           re.round_employee_id
+       AND ef.status_type = 0
 
       JOIN dbo.kpi_form_version fv
         ON fv.form_version_id =
-           current_employee_form
-             .form_version_id
+           ef.form_version_id
 
       JOIN dbo.kpi_form f
         ON f.form_id = fv.form_id
@@ -550,18 +597,24 @@ async function getKpiRows(
           ev.total_kpi_score
         FROM dbo.kpi_evaluation ev
         WHERE ev.employee_form_id =
-              current_employee_form
-                .employee_form_id
-          AND ev.kpi_assignment_id =
-              current_kpi_assignment
-                .kpi_assignment_id
+              ef.employee_form_id
+          ${evaluationAssignmentCondition}
           AND ev.status_type <> 9
         ORDER BY
           ev.evaluation_id DESC
       ) latest_evaluation
 
       WHERE re.round_id = @round_id
-        AND re.status_type <> 9;
+        AND k.status_type = 0
+        AND
+        (
+          @is_admin = 1
+          OR LTRIM(
+               RTRIM(
+                 k.evaluator_payroll_no
+               )
+             ) = @payroll_no
+        );
     `);
 
   return result.recordset.map((row) => ({

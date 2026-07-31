@@ -68,6 +68,17 @@ function decodeCookieValue(
   }
 }
 
+function shouldUseSecureCookie() {
+  const cookieSecure = process.env.COOKIE_SECURE
+    ?.trim()
+    .toLowerCase();
+
+  if (cookieSecure === "true") return true;
+  if (cookieSecure === "false") return false;
+
+  return process.env.NODE_ENV === "production";
+}
+
 function parseNotice(
   value: string | undefined,
 ): Notice | null {
@@ -112,9 +123,7 @@ async function setNoticeCookie(
     {
       httpOnly: true,
       sameSite: "lax",
-      secure:
-        process.env.NODE_ENV ===
-        "production",
+      secure: shouldUseSecureCookie(),
       maxAge:
         type === "success" ? 5 : 30,
       path: "/",
