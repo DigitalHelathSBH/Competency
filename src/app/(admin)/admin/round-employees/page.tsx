@@ -53,6 +53,7 @@ type RoundEmployeeRow = {
   rank_group_source: string | null;
   competency_percent: number;
   status_type: number;
+  has_started_evaluation: number;
 };
 
 type ExistingEmployeeRuleRow = {
@@ -592,7 +593,17 @@ async function getRoundEmployeesPage(state: RoundEmployeesTableState) {
       re.service_year,
       re.rank_group_source,
       re.competency_percent,
-      re.status_type
+      re.status_type,
+      CASE
+        WHEN EXISTS (
+          SELECT 1
+          FROM dbo.competency_evaluator_assignment started_assignment
+          JOIN dbo.competency_evaluation started_evaluation
+            ON started_evaluation.assignment_id = started_assignment.assignment_id
+          WHERE started_assignment.round_employee_id = re.round_employee_id
+        ) THEN 1
+        ELSE 0
+      END AS has_started_evaluation
     ${baseFrom}
     ORDER BY r.round_year DESC, r.round_no DESC, re.division_code, re.payroll_no
     OFFSET @offset ROWS
@@ -605,7 +616,7 @@ async function getRoundEmployeesPage(state: RoundEmployeesTableState) {
   } satisfies RoundEmployeesPageResult;
 }
 
-async function getRoundDraftInfo(roundId: number) {
+async function getRoundEditableInfo(roundId: number) {
   const pool = await getDbPool();
   const result = await pool.request().input("round_id", sql.Int, roundId)
     .query(`
@@ -616,7 +627,7 @@ async function getRoundDraftInfo(roundId: number) {
 
   const round = result.recordset[0] as RoundRow | undefined;
   if (!round) redirectWithAlert("error", "ไม่พบรอบประเมินที่เลือก");
-  if (Number(round.status_type) !== 0) {
+  if (![0, 1].includes(Number(round.status_type))) {
     redirectWithAlert(
       "error",
       `รอบ ${round.round_code} อยู่สถานะ ${roundStatusText(Number(round.status_type))} ไม่สามารถแก้ไขผู้ถูกประเมินได้`,
@@ -845,7 +856,14 @@ async function toggleRoundEmployeeStatusClient(
         re.round_employee_id,
         re.status_type,
         r.round_code,
-        r.status_type AS round_status_type
+        r.status_type AS round_status_type,
+        (
+          SELECT COUNT(*)
+          FROM dbo.competency_evaluator_assignment started_assignment
+          JOIN dbo.competency_evaluation started_evaluation
+            ON started_evaluation.assignment_id = started_assignment.assignment_id
+          WHERE started_assignment.round_employee_id = re.round_employee_id
+        ) AS started_evaluation_count
       FROM dbo.competency_round_employee re
       JOIN dbo.competency_round r ON r.round_id = re.round_id
       WHERE re.round_employee_id = @round_employee_id;
@@ -857,6 +875,7 @@ async function toggleRoundEmployeeStatusClient(
         status_type: number;
         round_code: string;
         round_status_type: number;
+        started_evaluation_count: number;
       }
     | undefined;
 
@@ -869,11 +888,20 @@ async function toggleRoundEmployeeStatusClient(
     };
   }
 
-  if (Number(checkedRow.round_status_type) !== 0) {
+  if (![0, 1].includes(Number(checkedRow.round_status_type))) {
     return {
       ok: false,
       type: "warning",
       message: `รอบ ${checkedRow.round_code} อยู่สถานะ ${roundStatusText(Number(checkedRow.round_status_type))} ไม่สามารถแก้ไขผู้ถูกประเมินได้`,
+      table: tableBefore,
+    };
+  }
+
+  if (Number(checkedRow.started_evaluation_count || 0) > 0) {
+    return {
+      ok: false,
+      type: "warning",
+      message: "ผู้ถูกประเมินรายนี้เริ่มมีข้อมูลการประเมินแล้ว ไม่สามารถปรับสถานะได้",
       table: tableBefore,
     };
   }
@@ -889,6 +917,9 @@ async function toggleRoundEmployeeStatusClient(
     `);
 
   revalidatePath("/admin/round-employees");
+  revalidatePath("/admin/assignments");
+  revalidatePath("/admin/round-readiness");
+  revalidatePath("/admin/round-issues");
   const table = await getRoundEmployeesTablePayload(inputState);
 
   return {
@@ -918,7 +949,7 @@ export default async function RoundEmployeesPage({
     if (!roundId) redirectWithAlert("error", "กรุณาเลือกรอบประเมิน");
     if (!payrollNo) redirectWithAlert("error", "กรุณาเลือกผู้ถูกประเมิน");
 
-    await getRoundDraftInfo(roundId);
+    await getRoundEditableInfo(roundId);
     const employee = await getEmployeeSnapshot(payrollNo, roundId);
 
     if (!employee) {
@@ -1017,7 +1048,7 @@ export default async function RoundEmployeesPage({
     if (!roundId) redirectWithAlert("error", "กรุณาเลือกรอบประเมิน");
     if (!divisionCode) redirectWithAlert("error", "กรุณาเลือกกลุ่มภารกิจ");
 
-    await getRoundDraftInfo(roundId);
+    await getRoundEditableInfo(roundId);
     const summary = await importEmployees(roundId, divisionCode);
     const message = buildImportMessage(summary);
 
@@ -1044,7 +1075,7 @@ export default async function RoundEmployeesPage({
     const roundId = Number(formData.get("round_id") || 0);
     if (!roundId) redirectWithAlert("error", "กรุณาเลือกรอบประเมิน");
 
-    await getRoundDraftInfo(roundId);
+    await getRoundEditableInfo(roundId);
     const summary = await importEmployees(roundId, null);
     const message = buildImportMessage(summary);
 
@@ -1084,9 +1115,11 @@ export default async function RoundEmployeesPage({
   const totalRows = roundEmployeesPage.totalRows;
   const totalPages = Math.max(1, Math.ceil(totalRows / tableState.pageSize));
   const currentPage = Math.min(tableState.page, totalPages);
-  const draftRounds = rounds.filter((round) => Number(round.status_type) === 0);
+  const editableRounds = rounds.filter((round) =>
+    [0, 1].includes(Number(round.status_type)),
+  );
 
-  const roundOptions = draftRounds.map((round) => ({
+  const roundOptions = editableRounds.map((round) => ({
     value: String(round.round_id),
     label: `${round.round_code} - ${roundStatusText(Number(round.status_type))}`,
   }));
@@ -1130,10 +1163,9 @@ export default async function RoundEmployeesPage({
 
       <PageHeader title="จัดผู้ถูกประเมินเข้ารอบประเมิน" description="" />
 
-      {draftRounds.length === 0 && (
+      {editableRounds.length === 0 && (
         <div className="mb-6 rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 dark:border-yellow-900/50 dark:bg-yellow-900/20 dark:text-yellow-200">
-          ไม่มีรอบสถานะร่างสำหรับเพิ่มผู้ถูกประเมิน
-          ถ้ารอบเปิดประเมินแล้วจะไม่สามารถแก้ไขรายชื่อได้
+          ไม่มีรอบสถานะร่างหรือเปิดประเมินที่สามารถปรับรายชื่อผู้ถูกประเมินได้
         </div>
       )}
 

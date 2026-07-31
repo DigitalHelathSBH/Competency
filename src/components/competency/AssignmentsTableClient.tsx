@@ -40,6 +40,7 @@ type AssignmentTableRow = {
   level2_evaluator_full_name: string | null;
   level2_evaluation_status_type: number | null;
   evaluator_required_type: number;
+  has_started_evaluation: number;
   has_cancelled_assignment: number;
   cancelled_level1_assignment_id: number | null;
   cancelled_level1_evaluator_payroll_no: string | null;
@@ -277,17 +278,15 @@ export default function AssignmentsTableClient({
     });
   }
 
+
   function renderEvaluatorCell(
     assignmentId: number | null,
     evaluatorName: string | null,
-    roundStatusType: number,
+    canManage: boolean,
     colorClassName: string,
     isCancelled = false,
   ) {
-    if (
-      !assignmentId ||
-      !evaluatorName
-    ) {
+    if (!assignmentId || !evaluatorName) {
       return (
         <span className="text-xs text-gray-400 dark:text-gray-500">
           ยังไม่ได้กำหนด
@@ -308,30 +307,15 @@ export default function AssignmentsTableClient({
       );
     }
 
-    const nameClassName =
-      `font-medium ${colorClassName}`;
+    const nameClassName = `font-medium ${colorClassName}`;
 
-    if (roundStatusType !== 0) {
-      return (
-        <div
-          className={`${nameClassName} text-sm`}
-        >
-          {evaluatorName}
-        </div>
-      );
+    if (!canManage) {
+      return <div className={`${nameClassName} text-sm`}>{evaluatorName}</div>;
     }
 
     return (
-      <form
-        action={
-          selectAssignmentForEditAction
-        }
-      >
-        <input
-          type="hidden"
-          name="assignment_id"
-          value={assignmentId}
-        />
+      <form action={selectAssignmentForEditAction}>
+        <input type="hidden" name="assignment_id" value={assignmentId} />
         <button
           type="submit"
           className={`${nameClassName} text-left text-sm hover:underline`}
@@ -343,25 +327,35 @@ export default function AssignmentsTableClient({
     );
   }
 
+
   function renderEvaluatorRequiredType(row: AssignmentTableRow) {
     const isSingleEvaluator = Number(row.evaluator_required_type || 2) === 1;
-    const isDraftRound = Number(row.round_status_type) === 0;
+    const isEditableRound = [0, 1].includes(Number(row.round_status_type));
+    const hasStartedEvaluation =
+      Number(row.has_started_evaluation || 0) === 1;
+    const canManage = isEditableRound && !hasStartedEvaluation;
     const nextType = isSingleEvaluator ? 2 : 1;
 
     return (
       <div className="flex flex-col gap-1">
         <button
           type="button"
-          disabled={!isDraftRound || isPending}
-          onClick={() => handleToggleRequiredType(row.round_employee_id, nextType)}
+          disabled={!canManage || isPending}
+          onClick={() =>
+            handleToggleRequiredType(row.round_employee_id, nextType)
+          }
           title={
-            isSingleEvaluator
-              ? "เปิดอยู่: ประเมินแค่หัวหน้าใกล้ชิด"
-              : "ปิดอยู่: ต้องมีหัวหน้าใกล้ชิดและหัวหน้าใหญ่"
+            hasStartedEvaluation
+              ? "เริ่มมีข้อมูลการประเมินแล้ว ไม่สามารถเปลี่ยนรูปแบบผู้ประเมินได้"
+              : isSingleEvaluator
+                ? "เปิดอยู่: ประเมินแค่หัวหน้าใกล้ชิด"
+                : "ปิดอยู่: ต้องมีหัวหน้าใกล้ชิดและหัวหน้าใหญ่"
           }
           className={[
             "relative inline-flex h-6 w-14 items-center rounded-full border transition",
-            isDraftRound && !isPending ? "cursor-pointer" : "cursor-not-allowed opacity-60",
+            canManage && !isPending
+              ? "cursor-pointer"
+              : "cursor-not-allowed opacity-60",
             isSingleEvaluator
               ? "border-[#1ab394] bg-[#1ab394]"
               : "border-gray-300 bg-gray-200 dark:border-gray-700 dark:bg-gray-800",
@@ -402,31 +396,29 @@ export default function AssignmentsTableClient({
     );
   }
 
-  function renderManagementActions(
-    row: AssignmentTableRow,
-  ) {
+
+  function renderManagementActions(row: AssignmentTableRow) {
     const isCancelledView =
-      Number(
-        row.row_assignment_status_type,
-      ) === 9;
+      Number(row.row_assignment_status_type) === 9;
+    const isEditableRound = [0, 1].includes(Number(row.round_status_type));
+    const hasStartedEvaluation =
+      Number(row.has_started_evaluation || 0) === 1;
+    const canManage = isEditableRound && !hasStartedEvaluation;
+    const lockedText = hasStartedEvaluation ? "เริ่มประเมินแล้ว" : "ล็อกแล้ว";
 
     if (isCancelledView) {
       const cancelledAssignments = [
         row.cancelled_level1_assignment_id
           ? {
-              assignmentId:
-                row.cancelled_level1_assignment_id,
-              label:
-                "เปิดหัวหน้าใกล้ชิด",
+              assignmentId: row.cancelled_level1_assignment_id,
+              label: "เปิดหัวหน้าใกล้ชิด",
             }
           : null,
 
         row.cancelled_level2_assignment_id
           ? {
-              assignmentId:
-                row.cancelled_level2_assignment_id,
-              label:
-                "เปิดหัวหน้าใหญ่",
+              assignmentId: row.cancelled_level2_assignment_id,
+              label: "เปิดหัวหน้าใหญ่",
             }
           : null,
       ].filter(
@@ -438,10 +430,7 @@ export default function AssignmentsTableClient({
         } => item !== null,
       );
 
-      if (
-        cancelledAssignments.length ===
-        0
-      ) {
+      if (cancelledAssignments.length === 0) {
         return (
           <span className="text-xs text-gray-400 dark:text-gray-500">
             -
@@ -449,60 +438,32 @@ export default function AssignmentsTableClient({
         );
       }
 
-      if (row.round_status_type !== 0) {
-        return (
-          <span
-            className={
-              lockedButtonClass
-            }
-          >
-            ล็อกแล้ว
-          </span>
-        );
+      if (!canManage) {
+        return <span className={lockedButtonClass}>{lockedText}</span>;
       }
 
       return (
         <div className="flex flex-col items-start gap-2">
-          {cancelledAssignments.map(
-            (item) => (
-              <button
-                key={
-                  item.assignmentId
-                }
-                type="button"
-                disabled={isPending}
-                onClick={() =>
-                  handleReactivateAssignment(
-                    item.assignmentId,
-                  )
-                }
-                className={
-                  greenActionButtonClass
-                }
-              >
-                {item.label}
-              </button>
-            ),
-          )}
+          {cancelledAssignments.map((item) => (
+            <button
+              key={item.assignmentId}
+              type="button"
+              disabled={isPending}
+              onClick={() => handleReactivateAssignment(item.assignmentId)}
+              className={greenActionButtonClass}
+            >
+              {item.label}
+            </button>
+          ))}
         </div>
       );
     }
 
     const activeAssignmentCount =
-      Number(
-        row.level1_assignment_id
-          ? 1
-          : 0,
-      ) +
-      Number(
-        row.level2_assignment_id
-          ? 1
-          : 0,
-      );
+      Number(row.level1_assignment_id ? 1 : 0) +
+      Number(row.level2_assignment_id ? 1 : 0);
 
-    if (
-      activeAssignmentCount === 0
-    ) {
+    if (activeAssignmentCount === 0) {
       return (
         <span className="text-xs text-gray-400 dark:text-gray-500">
           -
@@ -510,28 +471,16 @@ export default function AssignmentsTableClient({
       );
     }
 
-    if (row.round_status_type !== 0) {
-      return (
-        <span
-          className={
-            lockedButtonClass
-          }
-        >
-          ล็อกแล้ว
-        </span>
-      );
+    if (!canManage) {
+      return <span className={lockedButtonClass}>{lockedText}</span>;
     }
 
     return (
       <button
         type="button"
         disabled={isPending}
-        onClick={() =>
-          handleCancelAssignments(row)
-        }
-        className={
-          redActionButtonClass
-        }
+        onClick={() => handleCancelAssignments(row)}
+        className={redActionButtonClass}
       >
         ยกเลิก
       </button>
@@ -748,7 +697,8 @@ export default function AssignmentsTableClient({
                           ) === 9
                             ? row.cancelled_level1_evaluator_full_name
                             : row.level1_evaluator_full_name,
-                          row.round_status_type,
+                          [0, 1].includes(Number(row.round_status_type)) &&
+                            Number(row.has_started_evaluation || 0) === 0,
                           "text-[#23c6c8]",
                           Number(
                             row.row_assignment_status_type,
@@ -768,7 +718,8 @@ export default function AssignmentsTableClient({
                           ) === 9
                             ? row.cancelled_level2_evaluator_full_name
                             : row.level2_evaluator_full_name,
-                          row.round_status_type,
+                          [0, 1].includes(Number(row.round_status_type)) &&
+                            Number(row.has_started_evaluation || 0) === 0,
                           "text-[#f8ac59]",
                           Number(
                             row.row_assignment_status_type,

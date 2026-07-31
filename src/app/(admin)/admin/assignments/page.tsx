@@ -114,6 +114,7 @@ type AssignmentTableRow = {
   cancelled_level2_assignment_id: number | null;
   cancelled_level2_evaluator_payroll_no: string | null;
   cancelled_level2_evaluator_full_name: string | null;
+  has_started_evaluation: number;
 };
 
 type AssignmentTablePageResult = {
@@ -307,6 +308,30 @@ function roundStatusText(statusType: number) {
   return `สถานะ ${statusType}`;
 }
 
+function isEditableRoundStatus(statusType: number) {
+  return [0, 1].includes(Number(statusType));
+}
+
+async function syncKpiEvaluatorFromCompetency(
+  request: any,
+  roundEmployeeId: number,
+  changedBy: string,
+) {
+  await request
+    .input("round_employee_id", sql.Int, roundEmployeeId)
+    .input("changed_by", sql.VarChar(20), changedBy).query(`
+      IF OBJECT_ID(
+           N'dbo.sp_kpi_sync_evaluator_from_competency',
+           N'P'
+         ) IS NOT NULL
+      BEGIN
+        EXEC dbo.sp_kpi_sync_evaluator_from_competency
+             @round_employee_id = @round_employee_id,
+             @changed_by = @changed_by;
+      END;
+    `);
+}
+
 async function updateEvaluatorRequiredTypeSafely(
   roundEmployeeId: number,
   nextType: number,
@@ -325,7 +350,14 @@ async function updateEvaluatorRequiredTypeSafely(
         SELECT TOP (1)
           re.round_employee_id,
           ISNULL(re.evaluator_required_type, 2) AS evaluator_required_type,
-          r.status_type AS round_status_type
+          r.status_type AS round_status_type,
+          (
+            SELECT COUNT(*)
+            FROM dbo.competency_evaluator_assignment started_assignment
+            JOIN dbo.competency_evaluation started_evaluation
+              ON started_evaluation.assignment_id = started_assignment.assignment_id
+            WHERE started_assignment.round_employee_id = re.round_employee_id
+          ) AS started_evaluation_count
         FROM dbo.competency_round_employee re WITH (UPDLOCK, HOLDLOCK)
         JOIN dbo.competency_round r
           ON r.round_id = re.round_id
@@ -337,6 +369,7 @@ async function updateEvaluatorRequiredTypeSafely(
       | {
           round_status_type: number;
           evaluator_required_type: number;
+          started_evaluation_count: number;
         }
       | undefined;
 
@@ -344,8 +377,14 @@ async function updateEvaluatorRequiredTypeSafely(
       throw new Error("ไม่พบผู้ถูกประเมินในรอบ");
     }
 
-    if (Number(employee.round_status_type) !== 0) {
-      throw new Error("แก้ไขได้เฉพาะรอบสถานะร่างเท่านั้น");
+    if (!isEditableRoundStatus(employee.round_status_type)) {
+      throw new Error("รอบนี้ปิดหรือยกเลิกแล้ว ไม่สามารถแก้ไขรูปแบบผู้ประเมินได้");
+    }
+
+    if (Number(employee.started_evaluation_count || 0) > 0) {
+      throw new Error(
+        "ผู้ถูกประเมินรายนี้เริ่มมีข้อมูลการประเมินแล้ว ไม่สามารถเปลี่ยนรูปแบบผู้ประเมินได้",
+      );
     }
 
     if (nextType === 1) {
@@ -354,17 +393,8 @@ async function updateEvaluatorRequiredTypeSafely(
         .query(`
           SELECT
             a.assignment_id,
-            a.evaluator_level,
-            latest_evaluation.evaluation_id
+            a.evaluator_level
           FROM dbo.competency_evaluator_assignment a WITH (UPDLOCK, HOLDLOCK)
-          OUTER APPLY
-          (
-            SELECT TOP (1)
-              ev.evaluation_id
-            FROM dbo.competency_evaluation ev
-            WHERE ev.assignment_id = a.assignment_id
-            ORDER BY ev.evaluation_id DESC
-          ) latest_evaluation
           WHERE a.round_employee_id = @round_employee_id
             AND a.status_type <> 9
           ORDER BY a.evaluator_level, a.assignment_id;
@@ -373,7 +403,6 @@ async function updateEvaluatorRequiredTypeSafely(
       const activeAssignments = assignmentResult.recordset as Array<{
         assignment_id: number;
         evaluator_level: number;
-        evaluation_id: number | null;
       }>;
 
       const closeAssignments = activeAssignments.filter(
@@ -397,12 +426,6 @@ async function updateEvaluatorRequiredTypeSafely(
 
       if (closeAssignments.length === 0 && bigAssignments.length === 1) {
         const bigAssignment = bigAssignments[0];
-
-        if (bigAssignment.evaluation_id) {
-          throw new Error(
-            "รายการหัวหน้าใหญ่เริ่มมีข้อมูลประเมินแล้ว จึงไม่สามารถเปลี่ยนระดับอัตโนมัติได้",
-          );
-        }
 
         await new sql.Request(transaction)
           .input("assignment_id", sql.Int, bigAssignment.assignment_id)
@@ -428,6 +451,12 @@ async function updateEvaluatorRequiredTypeSafely(
           AND status_type <> 9;
       `);
 
+    await syncKpiEvaluatorFromCompetency(
+      new sql.Request(transaction),
+      roundEmployeeId,
+      changedBy,
+    );
+
     await transaction.commit();
   } catch (error) {
     try {
@@ -436,28 +465,6 @@ async function updateEvaluatorRequiredTypeSafely(
       // ignore rollback error
     }
     throw error;
-  }
-
-  if (normalizedAssignmentId > 0) {
-    try {
-      await pool
-        .request()
-        .input("round_employee_id", sql.Int, roundEmployeeId)
-        .input("changed_by", sql.VarChar(20), changedBy)
-        .query(`
-          IF OBJECT_ID(
-               N'dbo.sp_kpi_sync_evaluator_from_competency',
-               N'P'
-             ) IS NOT NULL
-          BEGIN
-            EXEC dbo.sp_kpi_sync_evaluator_from_competency
-                 @round_employee_id = @round_employee_id,
-                 @changed_by = @changed_by;
-          END;
-        `);
-    } catch (error) {
-      console.error("KPI evaluator sync failed:", error);
-    }
   }
 
   return {
@@ -507,12 +514,6 @@ async function setEvaluatorRequiredType(formData: FormData) {
     );
   }
 }
-
-const redActionButtonClass =
-  "rounded-lg border border-[#ed5565] bg-[#ed5565] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#e64253]";
-
-const lockedButtonClass =
-  "rounded-lg border border-gray-300 bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400";
 
 async function getRounds() {
   const pool = await getDbPool();
@@ -573,7 +574,7 @@ async function getRoundEmployeeOptions() {
 
     JOIN dbo.competency_round r
       ON r.round_id = re.round_id
-     AND r.status_type = 0
+     AND r.status_type IN (0, 1)
 
     JOIN dbo.competency_rank_group rg
       ON rg.rank_group_id =
@@ -647,14 +648,14 @@ async function getEvaluatorOptions() {
   const pool = await getDbPool();
 
   const result = await pool.request().query(`
-    WITH draft_round AS
+    WITH editable_round AS
     (
       SELECT TOP (1)
         round_id,
         CAST(start_date AS date)
           AS start_date
       FROM dbo.competency_round
-      WHERE status_type = 0
+      WHERE status_type IN (0, 1)
       ORDER BY
         round_year DESC,
         round_no DESC,
@@ -746,7 +747,7 @@ async function getEvaluatorOptions() {
 
     FROM ${ssbDb()}.dbo.PYREXT p
 
-    CROSS JOIN draft_round dr
+    CROSS JOIN editable_round dr
 
     OUTER APPLY
     (
@@ -1105,7 +1106,7 @@ function buildAssignmentTableWhereClause(
              WHERE check_assignment.round_employee_id =
                    re.round_employee_id
                AND check_assignment.evaluator_level = 1
-               AND check_assignment.status_type = 0
+               AND check_assignment.status_type <> 9
            )`,
     );
   }
@@ -1129,7 +1130,7 @@ function buildAssignmentTableWhereClause(
              WHERE check_assignment.round_employee_id =
                    re.round_employee_id
                AND check_assignment.evaluator_level = 2
-               AND check_assignment.status_type = 0
+               AND check_assignment.status_type <> 9
            )`,
     );
   }
@@ -1143,7 +1144,7 @@ function buildAssignmentTableWhereClause(
         WHERE check_assignment.round_employee_id =
               re.round_employee_id
           AND check_assignment.evaluator_level = 1
-          AND check_assignment.status_type = 0
+          AND check_assignment.status_type <> 9
       )
     `);
   }
@@ -1157,7 +1158,7 @@ function buildAssignmentTableWhereClause(
         WHERE check_assignment.round_employee_id =
               re.round_employee_id
           AND check_assignment.evaluator_level = 2
-          AND check_assignment.status_type = 0
+          AND check_assignment.status_type <> 9
       )
     `);
   }
@@ -1170,7 +1171,7 @@ function buildAssignmentTableWhereClause(
         FROM dbo.competency_evaluator_assignment check_assignment
         WHERE check_assignment.round_employee_id =
               re.round_employee_id
-          AND check_assignment.status_type = 0
+          AND check_assignment.status_type <> 9
       )
     `);
   }
@@ -1250,7 +1251,7 @@ async function getAssignmentsPage(
       WHERE a.round_employee_id =
             re.round_employee_id
         AND a.evaluator_level = 1
-        AND a.status_type = 0
+        AND a.status_type <> 9
       ORDER BY
         a.assignment_id DESC
     ) l1
@@ -1278,7 +1279,7 @@ async function getAssignmentsPage(
       WHERE a.round_employee_id =
             re.round_employee_id
         AND a.evaluator_level = 2
-        AND a.status_type = 0
+        AND a.status_type <> 9
       ORDER BY
         a.assignment_id DESC
     ) l2
@@ -1626,7 +1627,18 @@ async function getAssignmentsPage(
           AS cancelled_level2_evaluator_payroll_no,
 
         cancelled_level2_name.full_name
-          AS cancelled_level2_evaluator_full_name
+          AS cancelled_level2_evaluator_full_name,
+
+        CASE
+          WHEN EXISTS (
+            SELECT 1
+            FROM dbo.competency_evaluator_assignment started_assignment
+            JOIN dbo.competency_evaluation started_evaluation
+              ON started_evaluation.assignment_id = started_assignment.assignment_id
+            WHERE started_assignment.round_employee_id = re.round_employee_id
+          ) THEN 1
+          ELSE 0
+        END AS has_started_evaluation
 
       ${baseFrom}
 
@@ -1683,10 +1695,18 @@ async function getAssignmentForEdit(assignmentId: number) {
         a.round_employee_id,
         a.evaluator_payroll_no,
         a.evaluator_level,
-        r.status_type AS round_status_type
+        r.status_type AS round_status_type,
+        (
+          SELECT COUNT(*)
+          FROM dbo.competency_evaluator_assignment started_assignment
+          JOIN dbo.competency_evaluation started_evaluation
+            ON started_evaluation.assignment_id = started_assignment.assignment_id
+          WHERE started_assignment.round_employee_id = re.round_employee_id
+        ) AS started_evaluation_count
       FROM dbo.competency_evaluator_assignment a
       JOIN dbo.competency_round_employee re
         ON re.round_employee_id = a.round_employee_id
+       AND re.status_type <> 9
       JOIN dbo.competency_round r
         ON r.round_id = re.round_id
       WHERE a.assignment_id = @assignment_id
@@ -1701,10 +1721,17 @@ async function getAssignmentForEdit(assignmentId: number) {
         evaluator_payroll_no: string;
         evaluator_level: number;
         round_status_type: number;
+        started_evaluation_count: number;
       }
     | undefined;
 
-  if (!row || Number(row.round_status_type) !== 0) return null;
+  if (
+    !row ||
+    !isEditableRoundStatus(row.round_status_type) ||
+    Number(row.started_evaluation_count || 0) > 0
+  ) {
+    return null;
+  }
 
   return {
     assignment_id: row.assignment_id,
@@ -1724,6 +1751,51 @@ async function selectAssignmentForEdit(formData: FormData) {
 
   if (!assignmentId) {
     redirectWithAlert("error", "ข้อมูลรายการผู้ประเมินไม่ถูกต้อง");
+  }
+
+  const pool = await getDbPool();
+  const checkResult = await pool
+    .request()
+    .input("assignment_id", sql.Int, assignmentId).query(`
+      SELECT TOP (1)
+        r.status_type AS round_status_type,
+        (
+          SELECT COUNT(*)
+          FROM dbo.competency_evaluator_assignment started_assignment
+          JOIN dbo.competency_evaluation started_evaluation
+            ON started_evaluation.assignment_id = started_assignment.assignment_id
+          WHERE started_assignment.round_employee_id = re.round_employee_id
+        ) AS started_evaluation_count
+      FROM dbo.competency_evaluator_assignment a
+      JOIN dbo.competency_round_employee re
+        ON re.round_employee_id = a.round_employee_id
+       AND re.status_type <> 9
+      JOIN dbo.competency_round r
+        ON r.round_id = re.round_id
+      WHERE a.assignment_id = @assignment_id
+        AND a.status_type <> 9;
+    `);
+
+  const row = checkResult.recordset[0] as
+    | { round_status_type: number; started_evaluation_count: number }
+    | undefined;
+
+  if (!row) {
+    redirectWithAlert("error", "ไม่พบรายการผู้ประเมิน");
+  }
+
+  if (!isEditableRoundStatus(row.round_status_type)) {
+    redirectWithAlert(
+      "warning",
+      "รอบนี้ปิดหรือยกเลิกแล้ว ไม่สามารถแก้ไขผู้ประเมินได้",
+    );
+  }
+
+  if (Number(row.started_evaluation_count || 0) > 0) {
+    redirectWithAlert(
+      "warning",
+      "ผู้ถูกประเมินรายนี้เริ่มมีข้อมูลการประเมินแล้ว ไม่สามารถแก้ไขผู้ประเมินได้",
+    );
   }
 
   const cookieStore = await cookies();
@@ -1757,6 +1829,7 @@ async function clearAssignmentContext() {
 
   redirect("/admin/assignments");
 }
+
 async function saveAssignment(formData: FormData) {
   "use server";
 
@@ -1779,109 +1852,6 @@ async function saveAssignment(formData: FormData) {
   }
 
   const pool = await getDbPool();
-
-  const checkResult = await pool
-    .request()
-    .input("round_id", sql.Int, roundId)
-    .input("round_employee_id", sql.Int, roundEmployeeId)
-    .input("evaluator_payroll_no", sql.VarChar(20), evaluatorPayrollNo)
-    .input("evaluator_level", sql.Int, evaluatorLevel).query(`
-      SELECT TOP 1
-        re.round_employee_id,
-        re.round_id,
-        re.payroll_no,
-        re.rank_group_id,
-        ISNULL(re.evaluator_required_type, 2) AS evaluator_required_type,
-        ISNULL(erg.sort_order, 0) AS employee_rank_order,
-        r.status_type AS round_status_type,
-        (
-          SELECT COUNT(*)
-          FROM dbo.competency_evaluator_assignment a
-          WHERE a.round_employee_id = @round_employee_id
-            AND a.evaluator_level = @evaluator_level
-            AND a.status_type <> 9
-        ) AS active_same_level_count,
-        (
-          SELECT COUNT(*)
-          FROM dbo.competency_evaluator_assignment a
-          WHERE a.round_employee_id = @round_employee_id
-            AND a.evaluator_payroll_no = @evaluator_payroll_no
-            AND a.status_type <> 9
-        ) AS active_same_evaluator_count,
-        old_a.assignment_id AS cancelled_assignment_id
-      FROM dbo.competency_round_employee re
-      JOIN dbo.competency_round r
-        ON r.round_id = re.round_id
-      JOIN dbo.competency_rank_group erg
-        ON erg.rank_group_id = re.rank_group_id
-      OUTER APPLY (
-        SELECT TOP 1 a.assignment_id
-        FROM dbo.competency_evaluator_assignment a
-        WHERE a.round_employee_id = re.round_employee_id
-          AND a.evaluator_payroll_no = @evaluator_payroll_no
-          AND a.evaluator_level = @evaluator_level
-          AND a.status_type = 9
-        ORDER BY a.assignment_id DESC
-      ) old_a
-      WHERE re.round_employee_id = @round_employee_id
-        AND re.round_id = @round_id
-        AND re.status_type <> 9;
-    `);
-
-  const roundEmployee = checkResult.recordset[0] as
-    | {
-        payroll_no: string;
-        employee_rank_order: number;
-        evaluator_required_type: number;
-        round_status_type: number;
-        active_same_level_count: number;
-        active_same_evaluator_count: number;
-        cancelled_assignment_id: number | null;
-      }
-    | undefined;
-
-  if (!roundEmployee) {
-    redirectWithAlert("error", "ไม่พบผู้ถูกประเมินในรอบที่เลือก");
-  }
-
-  if (roundEmployee.round_status_type !== 0) {
-    redirectWithAlert(
-      "warning",
-      "รอบนี้ไม่ใช่สถานะร่าง ไม่สามารถกำหนดผู้ประเมินได้",
-    );
-  }
-
-  if (
-    Number(roundEmployee.evaluator_required_type) === 1 &&
-    evaluatorLevel !== 1
-  ) {
-    redirectWithAlert(
-      "warning",
-      "ผู้ถูกประเมินรายนี้ตั้งค่าใช้หัวหน้าใกล้ชิดคนเดียว 100% จึงต้องกำหนดเป็นหัวหน้าใกล้ชิดเท่านั้น",
-    );
-  }
-
-  if (String(roundEmployee.payroll_no) === evaluatorPayrollNo) {
-    redirectWithAlert(
-      "error",
-      "ผู้ถูกประเมินและผู้ประเมินต้องไม่ใช่คนเดียวกัน",
-    );
-  }
-
-  if (Number(roundEmployee.active_same_level_count) > 0) {
-    redirectWithAlert(
-      "warning",
-      "ผู้ถูกประเมินคนนี้มีผู้ประเมินในระดับนี้แล้ว หากต้องการเปลี่ยนให้กดแก้ไขรายการเดิม",
-    );
-  }
-
-  if (Number(roundEmployee.active_same_evaluator_count) > 0) {
-    redirectWithAlert(
-      "warning",
-      "ผู้ประเมินคนนี้ถูกกำหนดให้ผู้ถูกประเมินรายนี้แล้ว ไม่สามารถกำหนดซ้ำอีกระดับได้",
-    );
-  }
-
   const evaluator = await getEvaluatorRankSnapshot(
     pool,
     evaluatorPayrollNo,
@@ -1895,20 +1865,145 @@ async function saveAssignment(formData: FormData) {
     );
   }
 
+  const transaction = new sql.Transaction(pool);
+
   try {
+    await transaction.begin();
+
+    const checkResult = await new sql.Request(transaction)
+      .input("round_id", sql.Int, roundId)
+      .input("round_employee_id", sql.Int, roundEmployeeId)
+      .input("evaluator_payroll_no", sql.VarChar(20), evaluatorPayrollNo)
+      .input("evaluator_level", sql.Int, evaluatorLevel).query(`
+        SELECT TOP (1)
+          re.round_employee_id,
+          re.payroll_no,
+          ISNULL(re.evaluator_required_type, 2) AS evaluator_required_type,
+          r.status_type AS round_status_type,
+
+          (
+            SELECT COUNT(*)
+            FROM dbo.competency_evaluator_assignment active_assignment
+              WITH (UPDLOCK, HOLDLOCK)
+            WHERE active_assignment.round_employee_id =
+                  re.round_employee_id
+              AND active_assignment.evaluator_level =
+                  @evaluator_level
+              AND active_assignment.status_type <> 9
+          ) AS active_same_level_count,
+
+          (
+            SELECT COUNT(*)
+            FROM dbo.competency_evaluator_assignment active_assignment
+              WITH (UPDLOCK, HOLDLOCK)
+            WHERE active_assignment.round_employee_id =
+                  re.round_employee_id
+              AND active_assignment.evaluator_payroll_no =
+                  @evaluator_payroll_no
+              AND active_assignment.status_type <> 9
+          ) AS active_same_evaluator_count,
+
+          (
+            SELECT COUNT(*)
+            FROM dbo.competency_evaluator_assignment started_assignment
+            JOIN dbo.competency_evaluation started_evaluation
+              ON started_evaluation.assignment_id =
+                 started_assignment.assignment_id
+            WHERE started_assignment.round_employee_id =
+                  re.round_employee_id
+          ) AS started_evaluation_count,
+
+          old_assignment.assignment_id
+            AS cancelled_assignment_id
+
+        FROM dbo.competency_round_employee re
+          WITH (UPDLOCK, HOLDLOCK)
+        JOIN dbo.competency_round r
+          ON r.round_id = re.round_id
+
+        OUTER APPLY
+        (
+          SELECT TOP (1)
+            old_a.assignment_id
+          FROM dbo.competency_evaluator_assignment old_a
+            WITH (UPDLOCK, HOLDLOCK)
+          WHERE old_a.round_employee_id = re.round_employee_id
+            AND old_a.evaluator_payroll_no = @evaluator_payroll_no
+            AND old_a.evaluator_level = @evaluator_level
+            AND old_a.status_type = 9
+          ORDER BY old_a.assignment_id DESC
+        ) old_assignment
+
+        WHERE re.round_employee_id = @round_employee_id
+          AND re.round_id = @round_id
+          AND re.status_type <> 9;
+      `);
+
+    const roundEmployee = checkResult.recordset[0] as
+      | {
+          payroll_no: string;
+          evaluator_required_type: number;
+          round_status_type: number;
+          active_same_level_count: number;
+          active_same_evaluator_count: number;
+          started_evaluation_count: number;
+          cancelled_assignment_id: number | null;
+        }
+      | undefined;
+
+    if (!roundEmployee) {
+      throw new Error("ไม่พบผู้ถูกประเมินในรอบที่เลือก");
+    }
+
+    if (!isEditableRoundStatus(roundEmployee.round_status_type)) {
+      throw new Error(
+        "รอบนี้ปิดหรือยกเลิกแล้ว ไม่สามารถกำหนดผู้ประเมินได้",
+      );
+    }
+
+    if (Number(roundEmployee.started_evaluation_count || 0) > 0) {
+      throw new Error(
+        "ผู้ถูกประเมินรายนี้เริ่มมีข้อมูลการประเมินแล้ว ไม่สามารถเพิ่มผู้ประเมินได้",
+      );
+    }
+
+    if (
+      Number(roundEmployee.evaluator_required_type) === 1 &&
+      evaluatorLevel !== 1
+    ) {
+      throw new Error(
+        "ผู้ถูกประเมินรายนี้ตั้งค่าใช้หัวหน้าใกล้ชิดคนเดียว 100% จึงต้องกำหนดเป็นหัวหน้าใกล้ชิดเท่านั้น",
+      );
+    }
+
+    if (String(roundEmployee.payroll_no) === evaluatorPayrollNo) {
+      throw new Error("ผู้ถูกประเมินและผู้ประเมินต้องไม่ใช่คนเดียวกัน");
+    }
+
+    if (Number(roundEmployee.active_same_level_count) > 0) {
+      throw new Error(
+        "ผู้ถูกประเมินคนนี้มีผู้ประเมินในระดับนี้แล้ว หากต้องการเปลี่ยนให้กดแก้ไขรายการเดิม",
+      );
+    }
+
+    if (Number(roundEmployee.active_same_evaluator_count) > 0) {
+      throw new Error(
+        "ผู้ประเมินคนนี้ถูกกำหนดให้ผู้ถูกประเมินรายนี้แล้ว ไม่สามารถกำหนดซ้ำอีกระดับได้",
+      );
+    }
+
     if (roundEmployee.cancelled_assignment_id) {
-      await pool
-        .request()
+      await new sql.Request(transaction)
         .input("assignment_id", sql.Int, roundEmployee.cancelled_assignment_id)
         .query(`
           UPDATE dbo.competency_evaluator_assignment
           SET status_type = 0,
               submitted_date = NULL
-          WHERE assignment_id = @assignment_id;
+          WHERE assignment_id = @assignment_id
+            AND status_type = 9;
         `);
     } else {
-      await pool
-        .request()
+      await new sql.Request(transaction)
         .input("round_employee_id", sql.Int, roundEmployeeId)
         .input("evaluator_payroll_no", sql.VarChar(20), evaluatorPayrollNo)
         .input("evaluator_level", sql.Int, evaluatorLevel).query(`
@@ -1931,11 +2026,28 @@ async function saveAssignment(formData: FormData) {
         `);
     }
 
-    await ensureEvaluatorLoginUser(pool, evaluatorPayrollNo, session.emp_id);
+    await syncKpiEvaluatorFromCompetency(
+      new sql.Request(transaction),
+      roundEmployeeId,
+      session.emp_id,
+    );
+
+    await transaction.commit();
   } catch (error) {
+    try {
+      await transaction.rollback();
+    } catch {
+      // ignore rollback error
+    }
+
     console.error(error);
-    redirectWithAlert("error", "บันทึกผู้ประเมินไม่สำเร็จ");
+    redirectWithAlert(
+      "warning",
+      error instanceof Error ? error.message : "บันทึกผู้ประเมินไม่สำเร็จ",
+    );
   }
+
+  await ensureEvaluatorLoginUser(pool, evaluatorPayrollNo, session.emp_id);
 
   const cookieStore = await cookies();
   cookieStore.set("competency_assignment_prefill", "", {
@@ -1946,6 +2058,8 @@ async function saveAssignment(formData: FormData) {
 
   revalidatePath("/admin/assignments");
   revalidatePath("/admin/admin-users");
+  revalidatePath("/admin/round-readiness");
+  revalidatePath("/admin/round-issues");
   redirectWithAlert("success", "บันทึกผู้ประเมินเรียบร้อยแล้ว");
 }
 
@@ -1973,116 +2087,6 @@ async function updateAssignment(formData: FormData) {
   }
 
   const pool = await getDbPool();
-
-  const checkResult = await pool
-    .request()
-    .input("assignment_id", sql.Int, assignmentId)
-    .input("round_id", sql.Int, roundId)
-    .input("round_employee_id", sql.Int, roundEmployeeId)
-    .input("evaluator_payroll_no", sql.VarChar(20), evaluatorPayrollNo)
-    .input("evaluator_level", sql.Int, evaluatorLevel).query(`
-      SELECT TOP 1
-        a.assignment_id,
-        a.status_type AS assignment_status_type,
-        re.round_employee_id,
-        re.round_id,
-        re.payroll_no,
-        re.rank_group_id,
-        ISNULL(re.evaluator_required_type, 2) AS evaluator_required_type,
-        ISNULL(erg.sort_order, 0) AS employee_rank_order,
-        r.status_type AS round_status_type,
-        ev.status_type AS evaluation_status_type,
-        (
-          SELECT COUNT(*)
-          FROM dbo.competency_evaluator_assignment other_a
-          WHERE other_a.round_employee_id = @round_employee_id
-            AND other_a.evaluator_level = @evaluator_level
-            AND other_a.status_type <> 9
-            AND other_a.assignment_id <> @assignment_id
-        ) AS active_same_level_count,
-        (
-          SELECT COUNT(*)
-          FROM dbo.competency_evaluator_assignment other_a
-          WHERE other_a.round_employee_id = @round_employee_id
-            AND other_a.evaluator_payroll_no = @evaluator_payroll_no
-            AND other_a.status_type <> 9
-            AND other_a.assignment_id <> @assignment_id
-        ) AS active_same_evaluator_count
-      FROM dbo.competency_evaluator_assignment a
-      JOIN dbo.competency_round_employee re
-        ON re.round_employee_id = @round_employee_id
-      JOIN dbo.competency_round r
-        ON r.round_id = re.round_id
-      JOIN dbo.competency_rank_group erg
-        ON erg.rank_group_id = re.rank_group_id
-      LEFT JOIN dbo.competency_evaluation ev
-        ON ev.assignment_id = a.assignment_id
-      WHERE a.assignment_id = @assignment_id
-        AND re.round_id = @round_id
-        AND re.status_type <> 9;
-    `);
-
-  const roundEmployee = checkResult.recordset[0] as
-    | {
-        payroll_no: string;
-        employee_rank_order: number;
-        evaluator_required_type: number;
-        round_status_type: number;
-        evaluation_status_type: number | null;
-        active_same_level_count: number;
-        active_same_evaluator_count: number;
-      }
-    | undefined;
-
-  if (!roundEmployee) {
-    redirectWithAlert(
-      "error",
-      "ไม่พบรายการผู้ประเมิน หรือไม่พบผู้ถูกประเมินในรอบที่เลือก",
-    );
-  }
-
-  if (roundEmployee.round_status_type !== 0) {
-    redirectWithAlert(
-      "warning",
-      "รอบนี้ไม่ใช่สถานะร่าง ไม่สามารถแก้ไขผู้ประเมินได้",
-    );
-  }
-
-  if (roundEmployee.evaluation_status_type === 1) {
-    redirectWithAlert("warning", "รายการนี้ส่งผลประเมินแล้ว ไม่สามารถแก้ไขได้");
-  }
-
-  if (
-    Number(roundEmployee.evaluator_required_type) === 1 &&
-    evaluatorLevel !== 1
-  ) {
-    redirectWithAlert(
-      "warning",
-      "ผู้ถูกประเมินรายนี้ใช้หัวหน้าใกล้ชิดคนเดียว 100% จึงไม่สามารถเปลี่ยนเป็นหัวหน้าใหญ่ได้",
-    );
-  }
-
-  if (String(roundEmployee.payroll_no) === evaluatorPayrollNo) {
-    redirectWithAlert(
-      "error",
-      "ผู้ถูกประเมินและผู้ประเมินต้องไม่ใช่คนเดียวกัน",
-    );
-  }
-
-  if (Number(roundEmployee.active_same_level_count) > 0) {
-    redirectWithAlert(
-      "warning",
-      "ผู้ถูกประเมินคนนี้มีผู้ประเมินในระดับนี้แล้ว ไม่สามารถแก้ไขซ้ำได้",
-    );
-  }
-
-  if (Number(roundEmployee.active_same_evaluator_count) > 0) {
-    redirectWithAlert(
-      "warning",
-      "ผู้ประเมินคนนี้ถูกกำหนดให้ผู้ถูกประเมินรายนี้แล้ว ไม่สามารถกำหนดซ้ำอีกระดับได้",
-    );
-  }
-
   const evaluator = await getEvaluatorRankSnapshot(
     pool,
     evaluatorPayrollNo,
@@ -2096,39 +2100,250 @@ async function updateAssignment(formData: FormData) {
     );
   }
 
+  const transaction = new sql.Transaction(pool);
+  let assignmentChanged = false;
+
   try {
-    await pool
-      .request()
+    await transaction.begin();
+
+    const checkResult = await new sql.Request(transaction)
       .input("assignment_id", sql.Int, assignmentId)
+      .input("round_id", sql.Int, roundId)
       .input("round_employee_id", sql.Int, roundEmployeeId)
       .input("evaluator_payroll_no", sql.VarChar(20), evaluatorPayrollNo)
       .input("evaluator_level", sql.Int, evaluatorLevel).query(`
-        UPDATE dbo.competency_evaluator_assignment
-        SET round_employee_id = @round_employee_id,
-            evaluator_payroll_no = @evaluator_payroll_no,
-            evaluator_level = @evaluator_level,
-            status_type = 0,
-            submitted_date = NULL
-        WHERE assignment_id = @assignment_id;
+        SELECT TOP (1)
+          a.assignment_id,
+          a.evaluator_payroll_no AS current_evaluator_payroll_no,
+          a.evaluator_level AS current_evaluator_level,
+          re.payroll_no,
+          ISNULL(re.evaluator_required_type, 2) AS evaluator_required_type,
+          r.status_type AS round_status_type,
+
+          (
+            SELECT COUNT(*)
+            FROM dbo.competency_evaluator_assignment started_assignment
+            JOIN dbo.competency_evaluation started_evaluation
+              ON started_evaluation.assignment_id =
+                 started_assignment.assignment_id
+            WHERE started_assignment.round_employee_id =
+                  re.round_employee_id
+          ) AS started_evaluation_count,
+
+          (
+            SELECT COUNT(*)
+            FROM dbo.competency_evaluator_assignment other_a
+            WHERE other_a.round_employee_id = @round_employee_id
+              AND other_a.evaluator_level = @evaluator_level
+              AND other_a.status_type <> 9
+              AND other_a.assignment_id <> @assignment_id
+          ) AS active_same_level_count,
+
+          (
+            SELECT COUNT(*)
+            FROM dbo.competency_evaluator_assignment other_a
+            WHERE other_a.round_employee_id = @round_employee_id
+              AND other_a.evaluator_payroll_no = @evaluator_payroll_no
+              AND other_a.status_type <> 9
+              AND other_a.assignment_id <> @assignment_id
+          ) AS active_same_evaluator_count,
+
+          cancelled_target.assignment_id
+            AS cancelled_target_assignment_id
+
+        FROM dbo.competency_evaluator_assignment a
+          WITH (UPDLOCK, HOLDLOCK)
+
+        JOIN dbo.competency_round_employee re
+          WITH (UPDLOCK, HOLDLOCK)
+          ON re.round_employee_id = a.round_employee_id
+         AND re.status_type <> 9
+
+        JOIN dbo.competency_round r
+          ON r.round_id = re.round_id
+
+        OUTER APPLY
+        (
+          SELECT TOP (1)
+            old_a.assignment_id
+          FROM dbo.competency_evaluator_assignment old_a
+            WITH (UPDLOCK, HOLDLOCK)
+          WHERE old_a.round_employee_id = re.round_employee_id
+            AND old_a.evaluator_payroll_no = @evaluator_payroll_no
+            AND old_a.evaluator_level = @evaluator_level
+            AND old_a.status_type = 9
+            AND old_a.assignment_id <> a.assignment_id
+          ORDER BY old_a.assignment_id DESC
+        ) cancelled_target
+
+        WHERE a.assignment_id = @assignment_id
+          AND a.round_employee_id = @round_employee_id
+          AND a.status_type <> 9
+          AND re.round_id = @round_id;
       `);
 
-    await ensureEvaluatorLoginUser(pool, evaluatorPayrollNo, session.emp_id);
+    const roundEmployee = checkResult.recordset[0] as
+      | {
+          payroll_no: string;
+          current_evaluator_payroll_no: string;
+          current_evaluator_level: number;
+          evaluator_required_type: number;
+          round_status_type: number;
+          started_evaluation_count: number;
+          active_same_level_count: number;
+          active_same_evaluator_count: number;
+          cancelled_target_assignment_id: number | null;
+        }
+      | undefined;
+
+    if (!roundEmployee) {
+      throw new Error(
+        "ไม่พบรายการผู้ประเมิน หรือไม่พบผู้ถูกประเมินในรอบที่เลือก",
+      );
+    }
+
+    if (!isEditableRoundStatus(roundEmployee.round_status_type)) {
+      throw new Error(
+        "รอบนี้ปิดหรือยกเลิกแล้ว ไม่สามารถแก้ไขผู้ประเมินได้",
+      );
+    }
+
+    if (Number(roundEmployee.started_evaluation_count || 0) > 0) {
+      throw new Error(
+        "ผู้ถูกประเมินรายนี้เริ่มมีข้อมูลการประเมินแล้ว ไม่สามารถเปลี่ยนผู้ประเมินได้",
+      );
+    }
+
+    if (
+      Number(roundEmployee.evaluator_required_type) === 1 &&
+      evaluatorLevel !== 1
+    ) {
+      throw new Error(
+        "ผู้ถูกประเมินรายนี้ใช้หัวหน้าใกล้ชิดคนเดียว 100% จึงไม่สามารถเปลี่ยนเป็นหัวหน้าใหญ่ได้",
+      );
+    }
+
+    if (String(roundEmployee.payroll_no) === evaluatorPayrollNo) {
+      throw new Error("ผู้ถูกประเมินและผู้ประเมินต้องไม่ใช่คนเดียวกัน");
+    }
+
+    const isSameAssignment =
+      String(roundEmployee.current_evaluator_payroll_no) ===
+        evaluatorPayrollNo &&
+      Number(roundEmployee.current_evaluator_level) === evaluatorLevel;
+
+    if (!isSameAssignment) {
+      if (Number(roundEmployee.active_same_level_count) > 0) {
+        throw new Error(
+          "ผู้ถูกประเมินคนนี้มีผู้ประเมินในระดับนี้แล้ว ไม่สามารถแก้ไขซ้ำได้",
+        );
+      }
+
+      if (Number(roundEmployee.active_same_evaluator_count) > 0) {
+        throw new Error(
+          "ผู้ประเมินคนนี้ถูกกำหนดให้ผู้ถูกประเมินรายนี้แล้ว ไม่สามารถกำหนดซ้ำอีกระดับได้",
+        );
+      }
+
+      await new sql.Request(transaction)
+        .input("assignment_id", sql.Int, assignmentId)
+        .query(`
+          UPDATE dbo.competency_evaluator_assignment
+          SET status_type = 9
+          WHERE assignment_id = @assignment_id
+            AND status_type <> 9;
+        `);
+
+      if (roundEmployee.cancelled_target_assignment_id) {
+        await new sql.Request(transaction)
+          .input(
+            "target_assignment_id",
+            sql.Int,
+            roundEmployee.cancelled_target_assignment_id,
+          )
+          .query(`
+            UPDATE dbo.competency_evaluator_assignment
+            SET status_type = 0,
+                submitted_date = NULL
+            WHERE assignment_id = @target_assignment_id
+              AND status_type = 9;
+          `);
+      } else {
+        await new sql.Request(transaction)
+          .input("round_employee_id", sql.Int, roundEmployeeId)
+          .input(
+            "evaluator_payroll_no",
+            sql.VarChar(20),
+            evaluatorPayrollNo,
+          )
+          .input("evaluator_level", sql.Int, evaluatorLevel)
+          .query(`
+            INSERT INTO dbo.competency_evaluator_assignment
+            (
+              round_employee_id,
+              evaluator_payroll_no,
+              evaluator_level,
+              status_type,
+              submitted_date
+            )
+            VALUES
+            (
+              @round_employee_id,
+              @evaluator_payroll_no,
+              @evaluator_level,
+              0,
+              NULL
+            );
+          `);
+      }
+
+      await syncKpiEvaluatorFromCompetency(
+        new sql.Request(transaction),
+        roundEmployeeId,
+        session.emp_id,
+      );
+
+      assignmentChanged = true;
+    }
+
+    await transaction.commit();
   } catch (error) {
+    try {
+      await transaction.rollback();
+    } catch {
+      // ignore rollback error
+    }
+
     console.error(error);
-    redirectWithAlert("error", "แก้ไขผู้ประเมินไม่สำเร็จ");
+    redirectWithAlert(
+      "warning",
+      error instanceof Error ? error.message : "แก้ไขผู้ประเมินไม่สำเร็จ",
+    );
   }
+
+  await ensureEvaluatorLoginUser(pool, evaluatorPayrollNo, session.emp_id);
 
   const cookieStore = await cookies();
   cookieStore.set("competency_assignment_edit", "", { path: "/", maxAge: 0 });
 
   revalidatePath("/admin/assignments");
   revalidatePath("/admin/admin-users");
-  redirectWithAlert("success", "แก้ไขผู้ประเมินเรียบร้อยแล้ว");
+  revalidatePath("/admin/round-readiness");
+  revalidatePath("/admin/round-issues");
+
+  redirectWithAlert(
+    "success",
+    assignmentChanged
+      ? "เปลี่ยนผู้ประเมินเรียบร้อยแล้ว และเก็บรายการเดิมไว้ในประวัติการยกเลิก"
+      : "ข้อมูลผู้ประเมินไม่มีการเปลี่ยนแปลง",
+  );
 }
+
 
 async function toggleAssignmentStatus(formData: FormData) {
   "use server";
 
+  const session = await requireAdminSession();
   const assignmentId = Number(formData.get("assignment_id") || 0);
   const nextStatus = Number(formData.get("next_status") || 0);
 
@@ -2137,115 +2352,155 @@ async function toggleAssignmentStatus(formData: FormData) {
   }
 
   const pool = await getDbPool();
-
-  const checkResult = await pool
-    .request()
-    .input("assignment_id", sql.Int, assignmentId).query(`
-      SELECT TOP 1
-        a.assignment_id,
-        a.round_employee_id,
-        a.evaluator_payroll_no,
-        a.evaluator_level,
-        a.status_type,
-        ISNULL(re.evaluator_required_type, 2) AS evaluator_required_type,
-        r.status_type AS round_status_type,
-        ev.status_type AS evaluation_status_type,
-        (
-          SELECT COUNT(*)
-          FROM dbo.competency_evaluator_assignment other_a
-          WHERE other_a.round_employee_id = a.round_employee_id
-            AND other_a.evaluator_level = a.evaluator_level
-            AND other_a.status_type <> 9
-            AND other_a.assignment_id <> a.assignment_id
-        ) AS active_same_level_count,
-        (
-          SELECT COUNT(*)
-          FROM dbo.competency_evaluator_assignment other_a
-          WHERE other_a.round_employee_id = a.round_employee_id
-            AND other_a.evaluator_payroll_no = a.evaluator_payroll_no
-            AND other_a.status_type <> 9
-            AND other_a.assignment_id <> a.assignment_id
-        ) AS active_same_evaluator_count
-      FROM dbo.competency_evaluator_assignment a
-      JOIN dbo.competency_round_employee re
-        ON re.round_employee_id = a.round_employee_id
-      JOIN dbo.competency_round r
-        ON r.round_id = re.round_id
-      LEFT JOIN dbo.competency_evaluation ev
-        ON ev.assignment_id = a.assignment_id
-      WHERE a.assignment_id = @assignment_id;
-    `);
-
-  const assignment = checkResult.recordset[0] as
-    | {
-        round_status_type: number;
-        evaluator_required_type: number;
-        evaluator_level: number;
-        evaluation_status_type: number | null;
-        active_same_level_count: number;
-        active_same_evaluator_count: number;
-      }
-    | undefined;
-
-  if (!assignment) {
-    redirectWithAlert("error", "ไม่พบรายการผู้ประเมิน");
-  }
-
-  if (assignment.round_status_type !== 0) {
-    redirectWithAlert(
-      "warning",
-      "รอบนี้ไม่ใช่สถานะร่าง ไม่สามารถแก้ไขผู้ประเมินได้",
-    );
-  }
-
-  if (
-    nextStatus === 0 &&
-    Number(assignment.evaluator_required_type) === 1 &&
-    Number(assignment.evaluator_level) !== 1
-  ) {
-    redirectWithAlert(
-      "warning",
-      "ผู้ถูกประเมินรายนี้ใช้หัวหน้าใกล้ชิดคนเดียว 100% ไม่สามารถเปิดใช้งานรายการหัวหน้าใหญ่ได้",
-    );
-  }
-
-  if (nextStatus === 9 && assignment.evaluation_status_type === 1) {
-    redirectWithAlert(
-      "warning",
-      "รายการนี้ส่งผลประเมินแล้ว ไม่สามารถยกเลิกได้",
-    );
-  }
-
-  if (nextStatus === 0 && Number(assignment.active_same_level_count) > 0) {
-    redirectWithAlert(
-      "warning",
-      "มีผู้ประเมินระดับเดียวกันที่เปิดใช้งานอยู่แล้ว ไม่สามารถเปิดใช้งานรายการนี้ได้",
-    );
-  }
-
-  if (nextStatus === 0 && Number(assignment.active_same_evaluator_count) > 0) {
-    redirectWithAlert(
-      "warning",
-      "ผู้ประเมินคนนี้ถูกกำหนดให้ผู้ถูกประเมินรายนี้อยู่แล้ว ไม่สามารถเปิดใช้งานซ้ำได้",
-    );
-  }
+  const transaction = new sql.Transaction(pool);
 
   try {
-    await pool
-      .request()
+    await transaction.begin();
+
+    const checkResult = await new sql.Request(transaction)
+      .input("assignment_id", sql.Int, assignmentId).query(`
+        SELECT TOP (1)
+          a.assignment_id,
+          a.round_employee_id,
+          a.evaluator_level,
+          a.status_type,
+          ISNULL(re.evaluator_required_type, 2) AS evaluator_required_type,
+          r.status_type AS round_status_type,
+
+          (
+            SELECT COUNT(*)
+            FROM dbo.competency_evaluator_assignment started_assignment
+            JOIN dbo.competency_evaluation started_evaluation
+              ON started_evaluation.assignment_id =
+                 started_assignment.assignment_id
+            WHERE started_assignment.round_employee_id =
+                  a.round_employee_id
+          ) AS started_evaluation_count,
+
+          (
+            SELECT COUNT(*)
+            FROM dbo.competency_evaluator_assignment other_a
+            WHERE other_a.round_employee_id = a.round_employee_id
+              AND other_a.evaluator_level = a.evaluator_level
+              AND other_a.status_type <> 9
+              AND other_a.assignment_id <> a.assignment_id
+          ) AS active_same_level_count,
+
+          (
+            SELECT COUNT(*)
+            FROM dbo.competency_evaluator_assignment other_a
+            WHERE other_a.round_employee_id = a.round_employee_id
+              AND other_a.evaluator_payroll_no =
+                  a.evaluator_payroll_no
+              AND other_a.status_type <> 9
+              AND other_a.assignment_id <> a.assignment_id
+          ) AS active_same_evaluator_count
+
+        FROM dbo.competency_evaluator_assignment a
+          WITH (UPDLOCK, HOLDLOCK)
+        JOIN dbo.competency_round_employee re
+          WITH (UPDLOCK, HOLDLOCK)
+          ON re.round_employee_id = a.round_employee_id
+         AND re.status_type <> 9
+        JOIN dbo.competency_round r
+          ON r.round_id = re.round_id
+        WHERE a.assignment_id = @assignment_id;
+      `);
+
+    const assignment = checkResult.recordset[0] as
+      | {
+          round_employee_id: number;
+          round_status_type: number;
+          evaluator_required_type: number;
+          evaluator_level: number;
+          status_type: number;
+          started_evaluation_count: number;
+          active_same_level_count: number;
+          active_same_evaluator_count: number;
+        }
+      | undefined;
+
+    if (!assignment) {
+      throw new Error("ไม่พบรายการผู้ประเมิน");
+    }
+
+    if (!isEditableRoundStatus(assignment.round_status_type)) {
+      throw new Error(
+        "รอบนี้ปิดหรือยกเลิกแล้ว ไม่สามารถแก้ไขผู้ประเมินได้",
+      );
+    }
+
+    if (Number(assignment.started_evaluation_count || 0) > 0) {
+      throw new Error(
+        "ผู้ถูกประเมินรายนี้เริ่มมีข้อมูลการประเมินแล้ว ไม่สามารถปรับสถานะผู้ประเมินได้",
+      );
+    }
+
+    if (
+      nextStatus === 0 &&
+      Number(assignment.evaluator_required_type) === 1 &&
+      Number(assignment.evaluator_level) !== 1
+    ) {
+      throw new Error(
+        "ผู้ถูกประเมินรายนี้ใช้หัวหน้าใกล้ชิดคนเดียว 100% ไม่สามารถเปิดใช้งานรายการหัวหน้าใหญ่ได้",
+      );
+    }
+
+    if (nextStatus === 0 && Number(assignment.active_same_level_count) > 0) {
+      throw new Error(
+        "มีผู้ประเมินระดับเดียวกันที่เปิดใช้งานอยู่แล้ว ไม่สามารถเปิดใช้งานรายการนี้ได้",
+      );
+    }
+
+    if (
+      nextStatus === 0 &&
+      Number(assignment.active_same_evaluator_count) > 0
+    ) {
+      throw new Error(
+        "ผู้ประเมินคนนี้ถูกกำหนดให้ผู้ถูกประเมินรายนี้อยู่แล้ว ไม่สามารถเปิดใช้งานซ้ำได้",
+      );
+    }
+
+    await new sql.Request(transaction)
       .input("assignment_id", sql.Int, assignmentId)
       .input("next_status", sql.Int, nextStatus).query(`
         UPDATE dbo.competency_evaluator_assignment
         SET status_type = @next_status,
-            submitted_date = CASE WHEN @next_status = 9 THEN submitted_date ELSE NULL END
+            submitted_date =
+              CASE
+                WHEN @next_status = 9 THEN submitted_date
+                ELSE NULL
+              END
         WHERE assignment_id = @assignment_id;
       `);
+
+    await syncKpiEvaluatorFromCompetency(
+      new sql.Request(transaction),
+      assignment.round_employee_id,
+      session.emp_id,
+    );
+
+    await transaction.commit();
   } catch (error) {
+    try {
+      await transaction.rollback();
+    } catch {
+      // ignore rollback error
+    }
+
     console.error(error);
-    redirectWithAlert("error", "ปรับสถานะผู้ประเมินไม่สำเร็จ");
+    redirectWithAlert(
+      "warning",
+      error instanceof Error
+        ? error.message
+        : "ปรับสถานะผู้ประเมินไม่สำเร็จ",
+    );
   }
 
   revalidatePath("/admin/assignments");
+  revalidatePath("/admin/round-readiness");
+  revalidatePath("/admin/round-issues");
+
   redirectWithAlert(
     "success",
     nextStatus === 9
@@ -2295,9 +2550,11 @@ async function toggleEvaluatorRequiredType(formData: FormData) {
   }
 }
 
+
 async function cancelEmployeeAssignments(formData: FormData) {
   "use server";
 
+  const session = await requireAdminSession();
   const roundEmployeeId = Number(formData.get("round_employee_id") || 0);
 
   if (!roundEmployeeId) {
@@ -2305,75 +2562,106 @@ async function cancelEmployeeAssignments(formData: FormData) {
   }
 
   const pool = await getDbPool();
-
-  const checkResult = await pool
-    .request()
-    .input("round_employee_id", sql.Int, roundEmployeeId).query(`
-      SELECT
-        re.round_employee_id,
-        r.status_type AS round_status_type,
-        SUM(CASE WHEN a.status_type <> 9 THEN 1 ELSE 0 END) AS active_assignment_count,
-        SUM(CASE WHEN a.status_type <> 9 AND ev.status_type = 1 THEN 1 ELSE 0 END) AS submitted_evaluation_count
-      FROM dbo.competency_round_employee re
-      JOIN dbo.competency_round r
-        ON r.round_id = re.round_id
-      LEFT JOIN dbo.competency_evaluator_assignment a
-        ON a.round_employee_id = re.round_employee_id
-      LEFT JOIN dbo.competency_evaluation ev
-        ON ev.assignment_id = a.assignment_id
-      WHERE re.round_employee_id = @round_employee_id
-      GROUP BY
-        re.round_employee_id,
-        r.status_type;
-    `);
-
-  const row = checkResult.recordset[0] as
-    | {
-        round_status_type: number;
-        active_assignment_count: number | null;
-        submitted_evaluation_count: number | null;
-      }
-    | undefined;
-
-  if (!row) {
-    redirectWithAlert("error", "ไม่พบผู้ถูกประเมินในรอบนี้");
-  }
-
-  if (row.round_status_type !== 0) {
-    redirectWithAlert(
-      "warning",
-      "รอบนี้ไม่ใช่สถานะร่าง ไม่สามารถยกเลิกผู้ประเมินได้",
-    );
-  }
-
-  if (Number(row.active_assignment_count || 0) === 0) {
-    redirectWithAlert(
-      "warning",
-      "ผู้ถูกประเมินรายนี้ยังไม่มีผู้ประเมินที่เปิดใช้งาน",
-    );
-  }
-
-  if (Number(row.submitted_evaluation_count || 0) > 0) {
-    redirectWithAlert(
-      "warning",
-      "มีรายการที่ส่งผลประเมินแล้ว ไม่สามารถยกเลิกได้",
-    );
-  }
+  const transaction = new sql.Transaction(pool);
 
   try {
-    await pool.request().input("round_employee_id", sql.Int, roundEmployeeId)
+    await transaction.begin();
+
+    const checkResult = await new sql.Request(transaction)
+      .input("round_employee_id", sql.Int, roundEmployeeId).query(`
+        SELECT
+          re.round_employee_id,
+          r.status_type AS round_status_type,
+
+          (
+            SELECT COUNT(*)
+            FROM dbo.competency_evaluator_assignment active_assignment
+            WHERE active_assignment.round_employee_id =
+                  re.round_employee_id
+              AND active_assignment.status_type <> 9
+          ) AS active_assignment_count,
+
+          (
+            SELECT COUNT(*)
+            FROM dbo.competency_evaluator_assignment started_assignment
+            JOIN dbo.competency_evaluation started_evaluation
+              ON started_evaluation.assignment_id =
+                 started_assignment.assignment_id
+            WHERE started_assignment.round_employee_id =
+                  re.round_employee_id
+          ) AS started_evaluation_count
+
+        FROM dbo.competency_round_employee re
+          WITH (UPDLOCK, HOLDLOCK)
+        JOIN dbo.competency_round r
+          ON r.round_id = re.round_id
+        WHERE re.round_employee_id = @round_employee_id
+          AND re.status_type <> 9;
+      `);
+
+    const row = checkResult.recordset[0] as
+      | {
+          round_status_type: number;
+          active_assignment_count: number;
+          started_evaluation_count: number;
+        }
+      | undefined;
+
+    if (!row) {
+      throw new Error("ไม่พบผู้ถูกประเมินในรอบนี้");
+    }
+
+    if (!isEditableRoundStatus(row.round_status_type)) {
+      throw new Error(
+        "รอบนี้ปิดหรือยกเลิกแล้ว ไม่สามารถยกเลิกผู้ประเมินได้",
+      );
+    }
+
+    if (Number(row.active_assignment_count || 0) === 0) {
+      throw new Error(
+        "ผู้ถูกประเมินรายนี้ยังไม่มีผู้ประเมินที่เปิดใช้งาน",
+      );
+    }
+
+    if (Number(row.started_evaluation_count || 0) > 0) {
+      throw new Error(
+        "ผู้ถูกประเมินรายนี้เริ่มมีข้อมูลการประเมินแล้ว ไม่สามารถยกเลิกผู้ประเมินได้",
+      );
+    }
+
+    await new sql.Request(transaction)
+      .input("round_employee_id", sql.Int, roundEmployeeId)
       .query(`
         UPDATE dbo.competency_evaluator_assignment
         SET status_type = 9
         WHERE round_employee_id = @round_employee_id
           AND status_type <> 9;
       `);
+
+    await syncKpiEvaluatorFromCompetency(
+      new sql.Request(transaction),
+      roundEmployeeId,
+      session.emp_id,
+    );
+
+    await transaction.commit();
   } catch (error) {
+    try {
+      await transaction.rollback();
+    } catch {
+      // ignore rollback error
+    }
+
     console.error(error);
-    redirectWithAlert("error", "ยกเลิกผู้ประเมินไม่สำเร็จ");
+    redirectWithAlert(
+      "warning",
+      error instanceof Error ? error.message : "ยกเลิกผู้ประเมินไม่สำเร็จ",
+    );
   }
 
   revalidatePath("/admin/assignments");
+  revalidatePath("/admin/round-readiness");
+  revalidatePath("/admin/round-issues");
   redirectWithAlert("success", "ยกเลิกผู้ประเมินของรายการนี้เรียบร้อยแล้ว");
 }
 
@@ -2607,6 +2895,7 @@ async function loadAssignmentsTableClient(
   };
 }
 
+
 async function toggleEvaluatorRequiredTypeClient(
   roundEmployeeId: number,
   nextType: number,
@@ -2614,8 +2903,7 @@ async function toggleEvaluatorRequiredTypeClient(
 ): Promise<AssignmentTableActionResult> {
   "use server";
 
-  await requireAdminSession();
-
+  const session = await requireAdminSession();
   const tableBefore = await getAssignmentsTablePayload(inputState);
 
   if (!roundEmployeeId || ![1, 2].includes(Number(nextType))) {
@@ -2627,66 +2915,45 @@ async function toggleEvaluatorRequiredTypeClient(
     };
   }
 
-  const pool = await getDbPool();
+  try {
+    const result = await updateEvaluatorRequiredTypeSafely(
+      roundEmployeeId,
+      Number(nextType),
+      session.emp_id,
+    );
 
-  const rowResult = await pool
-    .request()
-    .input("round_employee_id", sql.Int, roundEmployeeId).query(`
-      SELECT TOP 1
-        re.round_employee_id,
-        re.evaluator_required_type,
-        r.status_type AS round_status_type
-      FROM dbo.competency_round_employee re
-      JOIN dbo.competency_round r
-        ON r.round_id = re.round_id
-      WHERE re.round_employee_id = @round_employee_id
-        AND re.status_type <> 9;
-    `);
+    revalidatePath("/admin/assignments");
+    revalidatePath("/admin/round-readiness");
+    revalidatePath("/admin/round-issues");
 
-  const row = rowResult.recordset[0] as
-    { round_status_type: number; evaluator_required_type: number } | undefined;
+    const table = await getAssignmentsTablePayload(inputState);
 
-  if (!row) {
+    return {
+      ok: true,
+      type: "success",
+      message:
+        Number(nextType) === 1
+          ? result.normalizedAssignment
+            ? "ตั้งค่าใช้หัวหน้าใกล้ชิดคนเดียว 100% และปรับหัวหน้าใหญ่เดิมเป็นหัวหน้าใกล้ชิดเรียบร้อยแล้ว"
+            : "ตั้งค่าใช้หัวหน้าใกล้ชิดคนเดียว 100% เรียบร้อยแล้ว"
+          : "ตั้งค่าให้ต้องมีผู้ประเมิน 2 คนเรียบร้อยแล้ว",
+      table,
+    };
+  } catch (error) {
+    console.error(error);
+
     return {
       ok: false,
       type: "warning",
-      message: "ไม่พบผู้ถูกประเมินในรอบ",
+      message:
+        error instanceof Error
+          ? error.message
+          : "ไม่สามารถเปลี่ยนรูปแบบผู้ประเมินได้",
       table: tableBefore,
     };
   }
-
-  if (Number(row.round_status_type) !== 0) {
-    return {
-      ok: false,
-      type: "warning",
-      message: "แก้ไขได้เฉพาะรอบสถานะร่างเท่านั้น",
-      table: tableBefore,
-    };
-  }
-
-  await pool
-    .request()
-    .input("round_employee_id", sql.Int, roundEmployeeId)
-    .input("next_type", sql.TinyInt, nextType).query(`
-      UPDATE dbo.competency_round_employee
-      SET evaluator_required_type = @next_type
-      WHERE round_employee_id = @round_employee_id;
-    `);
-
-  revalidatePath("/admin/assignments");
-
-  const table = await getAssignmentsTablePayload(inputState);
-
-  return {
-    ok: true,
-    type: "success",
-    message:
-      Number(nextType) === 1
-        ? "ตั้งค่าให้ใช้หัวหน้าใกล้ชิด 100% เรียบร้อยแล้ว"
-        : "ตั้งค่าให้ต้องมีผู้ประเมิน 2 คนเรียบร้อยแล้ว",
-    table,
-  };
 }
+
 
 async function reactivateAssignmentClient(
   assignmentId: number,
@@ -2694,213 +2961,192 @@ async function reactivateAssignmentClient(
 ): Promise<AssignmentTableActionResult> {
   "use server";
 
-  await requireAdminSession();
-
-  const tableBefore =
-    await getAssignmentsTablePayload(
-      inputState,
-    );
+  const session = await requireAdminSession();
+  const tableBefore = await getAssignmentsTablePayload(inputState);
 
   if (!assignmentId) {
     return {
       ok: false,
       type: "error",
-      message:
-        "ข้อมูลผู้ประเมินไม่ถูกต้อง",
+      message: "ข้อมูลผู้ประเมินไม่ถูกต้อง",
       table: tableBefore,
     };
   }
 
   const pool = await getDbPool();
+  const transaction = new sql.Transaction(pool);
+  let evaluatorPayrollNo = "";
 
-  const checkResult = await pool
-    .request()
-    .input(
-      "assignment_id",
-      sql.Int,
-      assignmentId,
-    )
-    .query(`
-      SELECT TOP (1)
-        a.assignment_id,
-        a.round_employee_id,
-        a.evaluator_payroll_no,
-        a.evaluator_level,
-        a.status_type,
-        ISNULL(
-          re.evaluator_required_type,
-          2
-        ) AS evaluator_required_type,
-        r.status_type
-          AS round_status_type,
+  try {
+    await transaction.begin();
 
-        (
-          SELECT COUNT(*)
-          FROM dbo.competency_evaluator_assignment active_assignment
-          WHERE active_assignment.round_employee_id =
-                a.round_employee_id
-            AND active_assignment.evaluator_level =
-                a.evaluator_level
-            AND active_assignment.status_type <> 9
-            AND active_assignment.assignment_id <>
-                a.assignment_id
-        ) AS active_same_level_count,
+    const checkResult = await new sql.Request(transaction)
+      .input("assignment_id", sql.Int, assignmentId).query(`
+        SELECT TOP (1)
+          a.assignment_id,
+          a.round_employee_id,
+          a.evaluator_payroll_no,
+          a.evaluator_level,
+          a.status_type,
+          ISNULL(re.evaluator_required_type, 2) AS evaluator_required_type,
+          r.status_type AS round_status_type,
 
-        (
-          SELECT COUNT(*)
-          FROM dbo.competency_evaluator_assignment active_assignment
-          WHERE active_assignment.round_employee_id =
-                a.round_employee_id
-            AND active_assignment.evaluator_payroll_no =
-                a.evaluator_payroll_no
-            AND active_assignment.status_type <> 9
-            AND active_assignment.assignment_id <>
-                a.assignment_id
-        ) AS active_same_evaluator_count
+          (
+            SELECT COUNT(*)
+            FROM dbo.competency_evaluator_assignment started_assignment
+            JOIN dbo.competency_evaluation started_evaluation
+              ON started_evaluation.assignment_id =
+                 started_assignment.assignment_id
+            WHERE started_assignment.round_employee_id =
+                  a.round_employee_id
+          ) AS started_evaluation_count,
 
-      FROM dbo.competency_evaluator_assignment a
-      JOIN dbo.competency_round_employee re
-        ON re.round_employee_id =
-           a.round_employee_id
-       AND re.status_type <> 9
-      JOIN dbo.competency_round r
-        ON r.round_id = re.round_id
-      WHERE a.assignment_id =
-            @assignment_id;
-    `);
+          (
+            SELECT COUNT(*)
+            FROM dbo.competency_evaluator_assignment active_assignment
+            WHERE active_assignment.round_employee_id =
+                  a.round_employee_id
+              AND active_assignment.evaluator_level =
+                  a.evaluator_level
+              AND active_assignment.status_type <> 9
+              AND active_assignment.assignment_id <>
+                  a.assignment_id
+          ) AS active_same_level_count,
 
-  const assignment =
-    checkResult.recordset[0] as
+          (
+            SELECT COUNT(*)
+            FROM dbo.competency_evaluator_assignment active_assignment
+            WHERE active_assignment.round_employee_id =
+                  a.round_employee_id
+              AND active_assignment.evaluator_payroll_no =
+                  a.evaluator_payroll_no
+              AND active_assignment.status_type <> 9
+              AND active_assignment.assignment_id <>
+                  a.assignment_id
+          ) AS active_same_evaluator_count
+
+        FROM dbo.competency_evaluator_assignment a
+          WITH (UPDLOCK, HOLDLOCK)
+        JOIN dbo.competency_round_employee re
+          WITH (UPDLOCK, HOLDLOCK)
+          ON re.round_employee_id = a.round_employee_id
+         AND re.status_type <> 9
+        JOIN dbo.competency_round r
+          ON r.round_id = re.round_id
+        WHERE a.assignment_id = @assignment_id;
+      `);
+
+    const assignment = checkResult.recordset[0] as
       | {
+          round_employee_id: number;
+          evaluator_payroll_no: string;
           evaluator_level: number;
           evaluator_required_type: number;
           round_status_type: number;
           status_type: number;
+          started_evaluation_count: number;
           active_same_level_count: number;
           active_same_evaluator_count: number;
         }
       | undefined;
 
-  if (!assignment) {
-    return {
-      ok: false,
-      type: "error",
-      message:
-        "ไม่พบรายการผู้ประเมิน",
-      table: tableBefore,
-    };
-  }
+    if (!assignment) {
+      throw new Error("ไม่พบรายการผู้ประเมิน");
+    }
 
-  if (
-    Number(assignment.status_type) !== 9
-  ) {
-    return {
-      ok: false,
-      type: "warning",
-      message:
-        "รายการนี้ไม่ได้อยู่ในสถานะยกเลิก",
-      table: tableBefore,
-    };
-  }
+    evaluatorPayrollNo = String(assignment.evaluator_payroll_no || "");
 
-  if (
-    Number(
-      assignment.round_status_type,
-    ) !== 0
-  ) {
-    return {
-      ok: false,
-      type: "warning",
-      message:
-        "เปิดใช้งานได้เฉพาะรอบสถานะร่างเท่านั้น",
-      table: tableBefore,
-    };
-  }
+    if (Number(assignment.status_type) !== 9) {
+      throw new Error("รายการนี้ไม่ได้อยู่ในสถานะยกเลิก");
+    }
 
-  if (
-    Number(
-      assignment.evaluator_required_type,
-    ) === 1 &&
-    Number(
-      assignment.evaluator_level,
-    ) !== 1
-  ) {
-    return {
-      ok: false,
-      type: "warning",
-      message:
+    if (!isEditableRoundStatus(assignment.round_status_type)) {
+      throw new Error(
+        "รอบนี้ปิดหรือยกเลิกแล้ว ไม่สามารถเปิดใช้งานผู้ประเมินได้",
+      );
+    }
+
+    if (Number(assignment.started_evaluation_count || 0) > 0) {
+      throw new Error(
+        "ผู้ถูกประเมินรายนี้เริ่มมีข้อมูลการประเมินแล้ว ไม่สามารถเปิดใช้งานผู้ประเมินได้",
+      );
+    }
+
+    if (
+      Number(assignment.evaluator_required_type) === 1 &&
+      Number(assignment.evaluator_level) !== 1
+    ) {
+      throw new Error(
         "ผู้ถูกประเมินรายนี้ใช้หัวหน้าใกล้ชิดคนเดียว 100% จึงไม่สามารถเปิดใช้งานหัวหน้าใหญ่ได้",
-      table: tableBefore,
-    };
-  }
+      );
+    }
 
-  if (
-    Number(
-      assignment.active_same_level_count,
-    ) > 0
-  ) {
-    return {
-      ok: false,
-      type: "warning",
-      message:
-        "มีผู้ประเมินระดับเดียวกันที่ใช้งานอยู่แล้ว",
-      table: tableBefore,
-    };
-  }
+    if (Number(assignment.active_same_level_count) > 0) {
+      throw new Error("มีผู้ประเมินระดับเดียวกันที่ใช้งานอยู่แล้ว");
+    }
 
-  if (
-    Number(
-      assignment.active_same_evaluator_count,
-    ) > 0
-  ) {
-    return {
-      ok: false,
-      type: "warning",
-      message:
+    if (Number(assignment.active_same_evaluator_count) > 0) {
+      throw new Error(
         "ผู้ประเมินคนนี้ถูกกำหนดเป็นผู้ประเมินที่ใช้งานอยู่แล้ว",
+      );
+    }
+
+    await new sql.Request(transaction)
+      .input("assignment_id", sql.Int, assignmentId)
+      .query(`
+        UPDATE dbo.competency_evaluator_assignment
+        SET status_type = 0,
+            submitted_date = NULL
+        WHERE assignment_id = @assignment_id
+          AND status_type = 9;
+      `);
+
+    await syncKpiEvaluatorFromCompetency(
+      new sql.Request(transaction),
+      assignment.round_employee_id,
+      session.emp_id,
+    );
+
+    await transaction.commit();
+  } catch (error) {
+    try {
+      await transaction.rollback();
+    } catch {
+      // ignore rollback error
+    }
+
+    console.error(error);
+
+    return {
+      ok: false,
+      type: "warning",
+      message:
+        error instanceof Error
+          ? error.message
+          : "เปิดใช้งานผู้ประเมินไม่สำเร็จ",
       table: tableBefore,
     };
   }
 
-  await pool
-    .request()
-    .input(
-      "assignment_id",
-      sql.Int,
-      assignmentId,
-    )
-    .query(`
-      UPDATE dbo.competency_evaluator_assignment
-      SET status_type = 0,
-          submitted_date = NULL
-      WHERE assignment_id =
-            @assignment_id
-        AND status_type = 9;
-    `);
+  if (evaluatorPayrollNo) {
+    await ensureEvaluatorLoginUser(pool, evaluatorPayrollNo, session.emp_id);
+  }
 
-  revalidatePath(
-    "/admin/assignments",
-  );
-  revalidatePath(
-    "/admin/round-readiness",
-  );
-  revalidatePath(
-    "/admin/round-issues",
-  );
+  revalidatePath("/admin/assignments");
+  revalidatePath("/admin/admin-users");
+  revalidatePath("/admin/round-readiness");
+  revalidatePath("/admin/round-issues");
 
-  const table =
-    await getAssignmentsTablePayload(
-      inputState,
-    );
+  const table = await getAssignmentsTablePayload(inputState);
 
   return {
     ok: true,
     type: "success",
-    message:
-      "เปิดใช้งานผู้ประเมินเรียบร้อยแล้ว",
+    message: "เปิดใช้งานผู้ประเมินเรียบร้อยแล้ว",
     table,
   };
 }
+
 
 async function cancelEmployeeAssignmentsClient(
   roundEmployeeId: number,
@@ -2908,8 +3154,7 @@ async function cancelEmployeeAssignmentsClient(
 ): Promise<AssignmentTableActionResult> {
   "use server";
 
-  await requireAdminSession();
-
+  const session = await requireAdminSession();
   const tableBefore = await getAssignmentsTablePayload(inputState);
 
   if (!roundEmployeeId) {
@@ -2922,81 +3167,112 @@ async function cancelEmployeeAssignmentsClient(
   }
 
   const pool = await getDbPool();
+  const transaction = new sql.Transaction(pool);
 
-  const checkResult = await pool
-    .request()
-    .input("round_employee_id", sql.Int, roundEmployeeId).query(`
-      SELECT
-        re.round_employee_id,
-        r.status_type AS round_status_type,
-        SUM(CASE WHEN a.status_type <> 9 THEN 1 ELSE 0 END) AS active_assignment_count,
-        SUM(CASE WHEN a.status_type <> 9 AND ev.status_type = 1 THEN 1 ELSE 0 END) AS submitted_evaluation_count
-      FROM dbo.competency_round_employee re
-      JOIN dbo.competency_round r
-        ON r.round_id = re.round_id
-      LEFT JOIN dbo.competency_evaluator_assignment a
-        ON a.round_employee_id = re.round_employee_id
-      LEFT JOIN dbo.competency_evaluation ev
-        ON ev.assignment_id = a.assignment_id
-      WHERE re.round_employee_id = @round_employee_id
-      GROUP BY
-        re.round_employee_id,
-        r.status_type;
-    `);
+  try {
+    await transaction.begin();
 
-  const row = checkResult.recordset[0] as
-    | {
-        round_status_type: number;
-        active_assignment_count: number | null;
-        submitted_evaluation_count: number | null;
-      }
-    | undefined;
+    const checkResult = await new sql.Request(transaction)
+      .input("round_employee_id", sql.Int, roundEmployeeId).query(`
+        SELECT
+          re.round_employee_id,
+          r.status_type AS round_status_type,
 
-  if (!row) {
-    return {
-      ok: false,
-      type: "error",
-      message: "ไม่พบผู้ถูกประเมินในรอบนี้",
-      table: tableBefore,
-    };
-  }
+          (
+            SELECT COUNT(*)
+            FROM dbo.competency_evaluator_assignment active_assignment
+            WHERE active_assignment.round_employee_id =
+                  re.round_employee_id
+              AND active_assignment.status_type <> 9
+          ) AS active_assignment_count,
 
-  if (Number(row.round_status_type) !== 0) {
+          (
+            SELECT COUNT(*)
+            FROM dbo.competency_evaluator_assignment started_assignment
+            JOIN dbo.competency_evaluation started_evaluation
+              ON started_evaluation.assignment_id =
+                 started_assignment.assignment_id
+            WHERE started_assignment.round_employee_id =
+                  re.round_employee_id
+          ) AS started_evaluation_count
+
+        FROM dbo.competency_round_employee re
+          WITH (UPDLOCK, HOLDLOCK)
+        JOIN dbo.competency_round r
+          ON r.round_id = re.round_id
+        WHERE re.round_employee_id = @round_employee_id
+          AND re.status_type <> 9;
+      `);
+
+    const row = checkResult.recordset[0] as
+      | {
+          round_status_type: number;
+          active_assignment_count: number;
+          started_evaluation_count: number;
+        }
+      | undefined;
+
+    if (!row) {
+      throw new Error("ไม่พบผู้ถูกประเมินในรอบนี้");
+    }
+
+    if (!isEditableRoundStatus(row.round_status_type)) {
+      throw new Error(
+        "รอบนี้ปิดหรือยกเลิกแล้ว ไม่สามารถยกเลิกผู้ประเมินได้",
+      );
+    }
+
+    if (Number(row.active_assignment_count || 0) === 0) {
+      throw new Error(
+        "ผู้ถูกประเมินรายนี้ยังไม่มีผู้ประเมินที่เปิดใช้งาน",
+      );
+    }
+
+    if (Number(row.started_evaluation_count || 0) > 0) {
+      throw new Error(
+        "ผู้ถูกประเมินรายนี้เริ่มมีข้อมูลการประเมินแล้ว ไม่สามารถยกเลิกผู้ประเมินได้",
+      );
+    }
+
+    await new sql.Request(transaction)
+      .input("round_employee_id", sql.Int, roundEmployeeId)
+      .query(`
+        UPDATE dbo.competency_evaluator_assignment
+        SET status_type = 9
+        WHERE round_employee_id = @round_employee_id
+          AND status_type <> 9;
+      `);
+
+    await syncKpiEvaluatorFromCompetency(
+      new sql.Request(transaction),
+      roundEmployeeId,
+      session.emp_id,
+    );
+
+    await transaction.commit();
+  } catch (error) {
+    try {
+      await transaction.rollback();
+    } catch {
+      // ignore rollback error
+    }
+
+    console.error(error);
+
     return {
       ok: false,
       type: "warning",
-      message: "รอบนี้ไม่ใช่สถานะร่าง ไม่สามารถยกเลิกผู้ประเมินได้",
+      message:
+        error instanceof Error
+          ? error.message
+          : "ยกเลิกผู้ประเมินไม่สำเร็จ",
       table: tableBefore,
     };
   }
-
-  if (Number(row.active_assignment_count || 0) === 0) {
-    return {
-      ok: false,
-      type: "warning",
-      message: "ผู้ถูกประเมินรายนี้ยังไม่มีผู้ประเมินที่เปิดใช้งาน",
-      table: tableBefore,
-    };
-  }
-
-  if (Number(row.submitted_evaluation_count || 0) > 0) {
-    return {
-      ok: false,
-      type: "warning",
-      message: "มีรายการที่ส่งผลประเมินแล้ว ไม่สามารถยกเลิกได้",
-      table: tableBefore,
-    };
-  }
-
-  await pool.request().input("round_employee_id", sql.Int, roundEmployeeId)
-    .query(`
-      UPDATE dbo.competency_evaluator_assignment
-      SET status_type = 9
-      WHERE round_employee_id = @round_employee_id
-        AND status_type <> 9;
-    `);
 
   revalidatePath("/admin/assignments");
+  revalidatePath("/admin/round-readiness");
+  revalidatePath("/admin/round-issues");
 
   const table = await getAssignmentsTablePayload(inputState);
 
@@ -3086,7 +3362,14 @@ export default async function AssignmentsPage({
   ]);
 
   const draftRoundOptions = rounds
-    .filter((round) => round.status_type === 0)
+    .filter((round) => Number(round.status_type) === 0)
+    .map((round) => ({
+      value: String(round.round_id),
+      label: `${round.round_code} (${roundStatusText(round.status_type)})`,
+    }));
+
+  const editableRoundOptions = rounds
+    .filter((round) => isEditableRoundStatus(round.status_type))
     .map((round) => ({
       value: String(round.round_id),
       label: `${round.round_code} (${roundStatusText(round.status_type)})`,
@@ -3152,8 +3435,12 @@ export default async function AssignmentsPage({
         (row) =>
           row.round_employee_id ===
             assignmentPrefillFromCookie.round_employee_id &&
-          rounds.find((round) => round.round_id === row.round_id)
-            ?.status_type === 0,
+          isEditableRoundStatus(
+            Number(
+              rounds.find((round) => round.round_id === row.round_id)
+                ?.status_type ?? 9,
+            ),
+          ),
       )
     : null;
 
@@ -3172,141 +3459,6 @@ export default async function AssignmentsPage({
   const startItem =
     totalRows === 0 ? 0 : (currentPage - 1) * tableState.pageSize + 1;
   const endItem = Math.min(currentPage * tableState.pageSize, totalRows);
-
-  function renderEvaluatorCell(
-    assignmentId: number | null,
-    evaluatorName: string | null,
-    roundStatusType: number,
-    colorClassName: string,
-  ) {
-    if (!assignmentId || !evaluatorName) {
-      return (
-        <span className="text-xs text-gray-400 dark:text-gray-500">
-          ยังไม่ได้กำหนด
-        </span>
-      );
-    }
-
-    const nameClassName = `font-medium ${colorClassName}`;
-
-    if (roundStatusType !== 0) {
-      return <div className={`${nameClassName} text-sm`}>{evaluatorName}</div>;
-    }
-
-    return (
-      <form action={selectAssignmentForEdit}>
-        <input type="hidden" name="assignment_id" value={assignmentId} />
-        <button
-          type="submit"
-          className={`${nameClassName} text-left text-sm hover:underline`}
-          title="กดเพื่อแก้ไขผู้ประเมิน"
-        >
-          {evaluatorName}
-        </button>
-      </form>
-    );
-  }
-
-  function renderEvaluatorRequiredType(row: AssignmentTableRow) {
-    const isSingleEvaluator = Number(row.evaluator_required_type || 2) === 1;
-    const isDraftRound = Number(row.round_status_type) === 0;
-    const nextType = isSingleEvaluator ? 2 : 1;
-
-    const switchButton = (
-      <button
-        type={isDraftRound ? "submit" : "button"}
-        disabled={!isDraftRound}
-        title={
-          isSingleEvaluator
-            ? "เปิดอยู่: ประเมินแค่หัวหน้าใกล้ชิด"
-            : "ปิดอยู่: ต้องมีหัวหน้าใกล้ชิดและหัวหน้าใหญ่"
-        }
-        className={[
-          "relative inline-flex h-6 w-14 items-center rounded-full border transition",
-          isDraftRound ? "cursor-pointer" : "cursor-not-allowed opacity-60",
-          isSingleEvaluator
-            ? "border-[#1ab394] bg-[#1ab394]"
-            : "border-gray-300 bg-gray-200 dark:border-gray-700 dark:bg-gray-800",
-        ].join(" ")}
-      >
-        <span
-          className={[
-            "absolute text-[10px] font-bold uppercase leading-none text-white transition",
-            isSingleEvaluator ? "left-2 opacity-100" : "left-2 opacity-0",
-          ].join(" ")}
-        >
-          ON
-        </span>
-
-        <span
-          className={[
-            "absolute text-[10px] font-bold uppercase leading-none transition",
-            isSingleEvaluator
-              ? "right-2 opacity-0"
-              : "right-2 text-gray-500 opacity-100 dark:text-gray-300",
-          ].join(" ")}
-        >
-          OFF
-        </span>
-
-        <span
-          className={[
-            "absolute h-5 w-5 rounded-full bg-white shadow transition",
-            isSingleEvaluator ? "translate-x-8" : "translate-x-0.5",
-          ].join(" ")}
-        />
-      </button>
-    );
-
-    return (
-      <div className="flex flex-col gap-1">
-        {isDraftRound ? (
-          <form action={toggleEvaluatorRequiredType}>
-            <input
-              type="hidden"
-              name="round_employee_id"
-              value={row.round_employee_id}
-            />
-            <input type="hidden" name="next_type" value={nextType} />
-            {switchButton}
-          </form>
-        ) : (
-          switchButton
-        )}
-
-        <div className="text-xs text-gray-500 dark:text-gray-400">
-          {isSingleEvaluator ? "ใช้หัวหน้าใกล้ชิด 100%" : "ต้องมี 2 คน"}
-        </div>
-      </div>
-    );
-  }
-
-  function renderCancelActions(row: AssignmentTableRow) {
-    const activeAssignmentCount =
-      Number(row.level1_assignment_id ? 1 : 0) +
-      Number(row.level2_assignment_id ? 1 : 0);
-
-    if (activeAssignmentCount === 0) {
-      return (
-        <span className="text-xs text-gray-400 dark:text-gray-500">-</span>
-      );
-    }
-
-    if (row.round_status_type !== 0) {
-      return <span className={lockedButtonClass}>ล็อกแล้ว</span>;
-    }
-
-    return (
-      <form action={cancelEmployeeAssignments}>
-        <input
-          type="hidden"
-          name="round_employee_id"
-          value={row.round_employee_id}
-        />
-        <button className={redActionButtonClass}>ยกเลิก</button>
-      </form>
-    );
-  }
 
   return (
     <>
@@ -3327,7 +3479,7 @@ export default async function AssignmentsPage({
       />
 
       <AssignmentForm
-        roundOptions={draftRoundOptions}
+        roundOptions={editableRoundOptions}
         roundEmployeeOptions={roundEmployeeFormOptions}
         evaluatorOptions={evaluatorFormOptions}
         existingAssignmentRules={existingAssignmentRules}

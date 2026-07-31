@@ -45,6 +45,7 @@ type RoundEmployeeRow = {
   rank_group_source: string | null;
   competency_percent: number;
   status_type: number;
+  has_started_evaluation: number;
 };
 
 type RoundEmployeesTablePayload = {
@@ -383,7 +384,12 @@ export default function RoundEmployeesTableClient({
               </tr>
             ) : (
               rows.map((row) => {
-                const isLocked = Number(row.round_status_type) !== 0;
+                const isRoundEditable = [0, 1].includes(
+                  Number(row.round_status_type),
+                );
+                const hasStartedEvaluation =
+                  Number(row.has_started_evaluation || 0) === 1;
+                const isLocked = !isRoundEditable || hasStartedEvaluation;
                 const isCancelled = Number(row.status_type) === 9;
 
                 return (
@@ -453,8 +459,13 @@ export default function RoundEmployeesTableClient({
                           type="button"
                           disabled
                           className={lockedButtonClass}
+                          title={
+                            hasStartedEvaluation
+                              ? "เริ่มมีข้อมูลการประเมินแล้ว"
+                              : "รอบปิดหรือยกเลิกแล้ว"
+                          }
                         >
-                          ล็อกแล้ว
+                          {hasStartedEvaluation ? "เริ่มประเมินแล้ว" : "ล็อกแล้ว"}
                         </button>
                       ) : (
                         <button
