@@ -118,6 +118,12 @@ export default function EvaluationScoreForm({
 
   return (
     <form action={submitForm} className="space-y-3">
+      <input
+        type="hidden"
+        name="assignment_id"
+        value={data.assignment.assignment_id}
+      />
+
       <div className="grid grid-cols-1 gap-3 rounded-2xl border border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-white/[0.03] lg:grid-cols-12">
         <div className="lg:col-span-2">
           <p className="text-xs text-gray-500">ผู้ถูกประเมิน</p>

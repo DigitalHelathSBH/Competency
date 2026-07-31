@@ -28,6 +28,17 @@ const EVALUATION_NOTICE_COOKIE =
 const EVALUATION_OPEN_GROUP_COOKIE =
   "competency_evaluation_open_group";
 
+function shouldUseSecureCookie() {
+  const cookieSecure = process.env.COOKIE_SECURE
+    ?.trim()
+    .toLowerCase();
+
+  if (cookieSecure === "true") return true;
+  if (cookieSecure === "false") return false;
+
+  return process.env.NODE_ENV === "production";
+}
+
 type Notice = {
   type: "success" | "error";
   message: string;
@@ -66,17 +77,6 @@ function decodeCookieValue(
   } catch {
     return "";
   }
-}
-
-function shouldUseSecureCookie() {
-  const cookieSecure = process.env.COOKIE_SECURE
-    ?.trim()
-    .toLowerCase();
-
-  if (cookieSecure === "true") return true;
-  if (cookieSecure === "false") return false;
-
-  return process.env.NODE_ENV === "production";
 }
 
 function parseNotice(
@@ -509,9 +509,7 @@ export default async function EvaluationsPage() {
       {
         httpOnly: true,
         sameSite: "lax",
-        secure:
-          process.env.NODE_ENV ===
-          "production",
+        secure: shouldUseSecureCookie(),
         maxAge: 0,
         path: "/",
       },
@@ -523,9 +521,7 @@ export default async function EvaluationsPage() {
       {
         httpOnly: true,
         sameSite: "lax",
-        secure:
-          process.env.NODE_ENV ===
-          "production",
+        secure: shouldUseSecureCookie(),
         maxAge: 30 * 60,
         path: "/",
       },
@@ -537,9 +533,7 @@ export default async function EvaluationsPage() {
       {
         httpOnly: true,
         sameSite: "lax",
-        secure:
-          process.env.NODE_ENV ===
-          "production",
+        secure: shouldUseSecureCookie(),
         maxAge: 30 * 60,
         path: "/",
       },
