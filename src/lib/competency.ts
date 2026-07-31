@@ -988,7 +988,7 @@ export async function getWeightedReport(
                   )
               END AS weight_total,
               max_score_total.max_possible_score,
-              CAST(ISNULL(rank_percent.competency_percent, 30) AS decimal(5,2)) AS competency_percent,
+              CAST(ISNULL(re.competency_percent, 20) AS decimal(5,2)) AS competency_percent,
               CAST(
                   CASE
                       WHEN ISNULL(re.evaluator_required_type, 2) = 1
@@ -1011,7 +1011,7 @@ export async function getWeightedReport(
                                       ISNULL(level1.score, 0) * ISNULL(ISNULL(level1_weight.weight_percent, default_level1_weight.weight_percent), 0) / 100.0 +
                                       ISNULL(level2.score, 0) * ISNULL(ISNULL(level2_weight.weight_percent, default_level2_weight.weight_percent), 0) / 100.0
                               END
-                          ) * ISNULL(rank_percent.competency_percent, 30) / max_score_total.max_possible_score
+                          ) * ISNULL(re.competency_percent, 20) / max_score_total.max_possible_score
                   END
                   AS decimal(8,2)
               ) AS competency_score,
@@ -1020,16 +1020,6 @@ export async function getWeightedReport(
           FROM dbo.competency_round_employee re
           JOIN dbo.competency_round r
               ON r.round_id = re.round_id
-          OUTER APPLY (
-              SELECT TOP 1
-                  CAST(ISNULL(m.competency_percent, 30) AS decimal(5,2)) AS competency_percent
-              FROM dbo.competency_rank_group_map m
-              WHERE m.rank_code = re.rank_code
-                AND m.active_status = 1
-              ORDER BY
-                  CASE WHEN m.rank_group_id = re.rank_group_id THEN 0 ELSE 1 END,
-                  m.rank_group_map_id DESC
-          ) rank_percent
           OUTER APPLY (
               SELECT
                   CAST(SUM(CAST(crq.max_score AS decimal(8,2))) AS decimal(8,2)) AS max_possible_score
