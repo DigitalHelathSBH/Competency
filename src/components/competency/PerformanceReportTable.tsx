@@ -337,6 +337,7 @@ export default function PerformanceReportTable({
       <div className="mb-5 rounded-2xl border border-blue-100 bg-blue-50 px-5 py-4 text-sm leading-6 text-blue-800 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-200">
         สัดส่วน Competency ใช้ค่าที่บันทึกไว้กับบุคลากรในรอบนั้น ส่วนสัดส่วน KPI
         คำนวณจาก 100 ลบด้วยสัดส่วน Competency จึงอาจแตกต่างกันตามประเภทบุคลากร
+        รายงานจะแสดงผลจากผู้ประเมินที่ใช้งานอยู่ล่าสุด และไม่นำรายการเดิมที่ยกเลิกแล้วมาคำนวณ
       </div>
 
       <div className="mb-5 rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03]">
