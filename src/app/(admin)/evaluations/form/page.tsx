@@ -24,11 +24,6 @@ const EVALUATION_RETURN_COOKIE =
 const EVALUATION_NOTICE_COOKIE =
   "competency_evaluation_notice";
 
-type Notice = {
-  type: "success" | "error";
-  message: string;
-};
-
 function shouldUseSecureCookie() {
   const cookieSecure = process.env.COOKIE_SECURE
     ?.trim()
@@ -39,6 +34,11 @@ function shouldUseSecureCookie() {
 
   return process.env.NODE_ENV === "production";
 }
+
+type Notice = {
+  type: "success" | "error";
+  message: string;
+};
 
 function parseNotice(
   value: string | undefined,
@@ -172,11 +172,21 @@ export default async function EvaluationFormPage() {
     const currentCookieStore =
       await cookies();
 
-    const currentAssignmentId = Number(
+    const formAssignmentId = Number(
+      formData.get("assignment_id") || 0,
+    );
+
+    const cookieAssignmentId = Number(
       currentCookieStore.get(
         EVALUATION_ASSIGNMENT_COOKIE,
       )?.value || 0,
     );
+
+    const currentAssignmentId =
+      Number.isInteger(formAssignmentId) &&
+      formAssignmentId > 0
+        ? formAssignmentId
+        : cookieAssignmentId;
 
     let redirectPath =
       "/evaluations/form";
@@ -323,9 +333,7 @@ export default async function EvaluationFormPage() {
         {
           httpOnly: true,
           sameSite: "lax",
-          secure:
-            process.env.NODE_ENV ===
-            "production",
+          secure: shouldUseSecureCookie(),
           maxAge: 0,
           path: "/",
         },
@@ -337,9 +345,7 @@ export default async function EvaluationFormPage() {
         {
           httpOnly: true,
           sameSite: "lax",
-          secure:
-            process.env.NODE_ENV ===
-            "production",
+          secure: shouldUseSecureCookie(),
           maxAge: 0,
           path: "/",
         },
