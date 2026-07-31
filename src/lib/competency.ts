@@ -620,15 +620,14 @@ export async function saveEvaluation(
       `);
 
     if (Number(savedEvaluation.recordset[0]?.status_type || 0) === 1) {
-      await new sql.Request(transaction).input(
-        "assignment_id",
-        sql.Int,
-        assignmentId,
-      ).query(`
+      await new sql.Request(transaction)
+        .input("assignment_id", sql.Int, assignmentId)
+        .query(`
           UPDATE dbo.competency_evaluator_assignment
-          SET status_type = 1,
+          SET status_type = 0,
               submitted_date = SYSDATETIME()
-          WHERE assignment_id = @assignment_id;
+          WHERE assignment_id = @assignment_id
+            AND status_type <> 9;
         `);
     }
 
