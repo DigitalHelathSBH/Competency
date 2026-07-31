@@ -391,7 +391,8 @@ export default async function AdminRoundsPage({
                 NULLIF(LTRIM(RTRIM(CAST(p.[DEPT] AS varchar(20)))), '') AS dept_code,
                 NULLIF(LTRIM(RTRIM(CAST(p.[SECTION] AS varchar(20)))), '') AS section_code,
                 NULLIF(LTRIM(RTRIM(CAST(p.SITECODE AS varchar(20)))), '') AS site_code,
-                TRY_CONVERT(date, p.FIRSTEMPLOYEEDATE) AS first_employee_date
+                TRY_CONVERT(date, p.FIRSTEMPLOYEEDATE) AS first_employee_date,
+                CAST(@start_date AS date) AS start_date
               FROM dbo.competency_round_employee re
               JOIN ${ssbDb()}.dbo.PYREXT p
                 ON CAST(p.PAYROLLNO AS varchar(20)) = re.payroll_no
@@ -427,7 +428,34 @@ export default async function AdminRoundsPage({
                   WHEN c.rank_group_source = 'RANK' THEN rank_map.rank_group_id
                   ELSE tenure_map.rank_group_id
                 END AS rank_group_id,
-                CAST(ISNULL(site_percent.competency_percent, 20) AS decimal(5,2)) AS competency_percent
+                CAST(
+                  CASE
+                    /*
+                      ข้าราชการที่ ณ วันเริ่มรอบ
+                      ยังมีอายุงานไม่ครบ 6 เดือน
+                    */
+                    WHEN ISNULL(c.site_code, '') = '1'
+                      AND c.first_employee_date IS NOT NULL
+                      AND c.start_date IS NOT NULL
+                      AND c.first_employee_date <= c.start_date
+                      AND DATEADD(
+                            MONTH,
+                            6,
+                            c.first_employee_date
+                          ) > c.start_date
+                    THEN 50
+
+                    /*
+                      บุคลากรอื่นหรือข้าราชการที่ครบ 6 เดือนแล้ว
+                      ใช้เปอร์เซ็นต์ตามประเภทบุคลากร
+                    */
+                    ELSE ISNULL(
+                      site_percent.competency_percent,
+                      20
+                    )
+                  END
+                  AS decimal(5,2)
+                ) AS competency_percent
               FROM employee_calc c
               OUTER APPLY (
                 SELECT TOP 1 rg.rank_group_id
@@ -678,7 +706,34 @@ export default async function AdminRoundsPage({
                   WHEN c.rank_group_source = 'RANK' THEN rank_map.rank_group_id
                   ELSE tenure_map.rank_group_id
                 END AS rank_group_id,
-                CAST(ISNULL(site_percent.competency_percent, 20) AS decimal(5,2)) AS competency_percent
+                CAST(
+                  CASE
+                    /*
+                      ข้าราชการที่ ณ วันเริ่มรอบ
+                      ยังมีอายุงานไม่ครบ 6 เดือน
+                    */
+                    WHEN ISNULL(c.site_code, '') = '1'
+                      AND c.first_employee_date IS NOT NULL
+                      AND c.start_date IS NOT NULL
+                      AND c.first_employee_date <= c.start_date
+                      AND DATEADD(
+                            MONTH,
+                            6,
+                            c.first_employee_date
+                          ) > c.start_date
+                    THEN 50
+
+                    /*
+                      บุคลากรอื่นหรือข้าราชการที่ครบ 6 เดือนแล้ว
+                      ใช้เปอร์เซ็นต์ตามประเภทบุคลากร
+                    */
+                    ELSE ISNULL(
+                      site_percent.competency_percent,
+                      20
+                    )
+                  END
+                  AS decimal(5,2)
+                ) AS competency_percent
               FROM employee_calc c
               OUTER APPLY (
                 SELECT TOP 1 rg.rank_group_id

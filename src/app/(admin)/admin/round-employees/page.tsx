@@ -281,7 +281,34 @@ function employeeResolutionCte(additionalWhere = "") {
           WHEN c.rank_group_source = 'RANK' THEN rank_map.rank_group_id
           ELSE tenure_map.rank_group_id
         END AS rank_group_id,
-        CAST(ISNULL(site_percent.competency_percent, 20) AS decimal(5,2)) AS competency_percent,
+        CAST(
+          CASE
+            /*
+              ข้าราชการที่ ณ วันเริ่มรอบ
+              ยังมีอายุงานไม่ครบ 6 เดือน
+            */
+            WHEN ISNULL(c.site_code, '') = '1'
+              AND c.first_employee_date IS NOT NULL
+              AND c.start_date IS NOT NULL
+              AND c.first_employee_date <= c.start_date
+              AND DATEADD(
+                    MONTH,
+                    6,
+                    c.first_employee_date
+                  ) > c.start_date
+            THEN 50
+
+            /*
+              บุคลากรอื่นหรือข้าราชการที่ครบ 6 เดือนแล้ว
+              ใช้เปอร์เซ็นต์ตามประเภทบุคลากร
+            */
+            ELSE ISNULL(
+              site_percent.competency_percent,
+              20
+            )
+          END
+          AS decimal(5,2)
+        ) AS competency_percent,
         CASE
           WHEN EXISTS (
             SELECT 1
