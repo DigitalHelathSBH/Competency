@@ -380,7 +380,7 @@ function EvaluationActionButton({
       >
         {isSubmitted
           ? "แก้ไขการประเมิน"
-          : "ให้ประเมิน"}
+          : "ประเมิน"}
       </button>
     </form>
   );

@@ -69,6 +69,7 @@ type AssignmentsTableClientProps = {
   initialState: AssignmentTableState;
   roundOptions: SelectOption[];
   divisionOptions: SelectOption[];
+  sectionOptions: SelectOption[];
   loadTableAction: (state: AssignmentTableState) => Promise<AssignmentTableActionResult>;
   toggleEvaluatorRequiredTypeAction: (
     roundEmployeeId: number,
@@ -92,6 +93,7 @@ const DEFAULT_TABLE_STATE: AssignmentTableState = {
   search: "",
   roundId: "",
   divisionCode: "",
+  sectionCode: "",
   level: "",
   status: "active",
 };
@@ -126,6 +128,7 @@ export default function AssignmentsTableClient({
   initialState,
   roundOptions,
   divisionOptions,
+  sectionOptions,
   loadTableAction,
   toggleEvaluatorRequiredTypeAction,
   cancelEmployeeAssignmentsAction,
@@ -154,6 +157,11 @@ export default function AssignmentsTableClient({
   const tableDivisionOptions = useMemo(
     () => [{ value: "", label: "ทั้งหมด" }, ...divisionOptions],
     [divisionOptions],
+  );
+
+  const tableSectionOptions = useMemo(
+    () => [{ value: "", label: "ทั้งหมด" }, ...sectionOptions],
+    [sectionOptions],
   );
 
   function applyPayload(payload: AssignmentTablePayload) {
@@ -214,6 +222,7 @@ export default function AssignmentsTableClient({
       search: String(formData.get("search") || ""),
       roundId: String(formData.get("round_id") || ""),
       divisionCode: String(formData.get("division_code") || ""),
+      sectionCode: String(formData.get("section_code") || ""),
       level: String(formData.get("level") || ""),
       status: String(formData.get("status") || "active"),
     };
@@ -537,7 +546,7 @@ export default function AssignmentsTableClient({
 
       <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03]">
         <form onSubmit={handleSearch} className="mb-5 grid grid-cols-1 gap-4 lg:grid-cols-12">
-          <div className="lg:col-span-3">
+          <div className="lg:col-span-2">
             <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
               ค้นหา
             </label>
@@ -572,6 +581,20 @@ export default function AssignmentsTableClient({
               defaultValue={tableState.divisionCode}
               placeholder="กลุ่มภารกิจ: ทั้งหมด"
               options={tableDivisionOptions}
+            />
+          </div>
+
+          <div className="lg:col-span-2">
+            <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
+              หน่วยงาน
+            </label>
+
+            <SearchableSelect
+              key={`section-${tableState.sectionCode}`}
+              name="section_code"
+              defaultValue={tableState.sectionCode}
+              placeholder="หน่วยงาน: ทั้งหมด"
+              options={tableSectionOptions}
             />
           </div>
 

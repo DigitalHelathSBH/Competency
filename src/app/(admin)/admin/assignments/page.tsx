@@ -84,6 +84,7 @@ type AssignmentTableState = {
   search: string;
   roundId: string;
   divisionCode: string;
+  sectionCode: string;
   level: string;
   status: string;
 };
@@ -127,6 +128,11 @@ type DivisionOptionRow = {
   division_name: string;
 };
 
+type SectionOptionRow = {
+  section_code: string;
+  section_name: string;
+};
+
 const ASSIGNMENTS_TABLE_COOKIE = "competency_assignments_table_v2";
 
 const DEFAULT_TABLE_STATE: AssignmentTableState = {
@@ -135,6 +141,7 @@ const DEFAULT_TABLE_STATE: AssignmentTableState = {
   search: "",
   roundId: "",
   divisionCode: "",
+  sectionCode: "",
   level: "",
   status: "active",
 };
@@ -157,7 +164,10 @@ function normalizeTableState(
       .slice(0, 100),
     roundId: String(value?.roundId || "").trim(),
     divisionCode: String(value?.divisionCode || "").trim(),
-    level: ["1", "2", "missing1", "missing2"].includes(level) ? level : "",
+    sectionCode: String(value?.sectionCode || "").trim(),
+    level: ["1", "2", "missing1", "missing2"].includes(level)
+      ? level
+      : "",
     status: ["active", "inactive"].includes(status)
       ? status
       : DEFAULT_TABLE_STATE.status,
@@ -177,6 +187,38 @@ async function getAssignmentsTableState() {
   } catch {
     return DEFAULT_TABLE_STATE;
   }
+}
+
+async function getTableSectionOptions() {
+  const pool = await getDbPool();
+
+  const result = await pool.request().query(`
+    SELECT DISTINCT
+      LTRIM(RTRIM(re.section_code)) AS section_code,
+      ISNULL(
+        NULLIF(
+          LTRIM(RTRIM(sectioncode.ThaiName)),
+          ''
+        ),
+        LTRIM(RTRIM(re.section_code))
+      ) AS section_name
+
+    FROM dbo.competency_round_employee re
+
+    LEFT JOIN ${ssbDb()}.dbo.sectioncode sectioncode
+      ON sectioncode.Code = re.section_code
+
+    WHERE re.status_type <> 9
+      AND NULLIF(
+        LTRIM(RTRIM(re.section_code)),
+        ''
+      ) IS NOT NULL
+
+    ORDER BY
+      section_name;
+  `);
+
+  return result.recordset as SectionOptionRow[];
 }
 
 async function setAssignmentsTableState(state: AssignmentTableState) {
@@ -1087,6 +1129,12 @@ function buildAssignmentTableWhereClause(
     );
   }
 
+  if (state.sectionCode) {
+    whereParts.push(
+      "re.section_code = @filter_section_code",
+    );
+  }
+
   if (state.level === "1") {
     whereParts.push(
       state.status === "inactive"
@@ -1201,8 +1249,12 @@ function applyAssignmentTableInputs(request: any, state: AssignmentTableState) {
     request.input("filter_round_id", sql.Int, Number(state.roundId));
   }
 
-  if (state.divisionCode) {
-    request.input("filter_division_code", sql.VarChar(20), state.divisionCode);
+  if (state.sectionCode) {
+    request.input(
+      "filter_section_code",
+      sql.VarChar(20),
+      state.sectionCode,
+    );
   }
 
   return request;
@@ -3311,6 +3363,7 @@ export default async function AssignmentsPage({
       search: String(formData.get("search") || ""),
       roundId: String(formData.get("round_id") || ""),
       divisionCode: String(formData.get("division_code") || ""),
+      sectionCode: String(formData.get("section_code") || ""),
       level: String(formData.get("level") || ""),
       status: String(formData.get("status") || ""),
     });
@@ -3333,18 +3386,19 @@ export default async function AssignmentsPage({
     rounds,
     existingAssignmentRules,
     tableDivisionRows,
+    tableSectionRows,
     assignmentPage,
     editAssignment,
   ] = await Promise.all([
     getRounds(),
     getExistingAssignmentRules(),
     getTableDivisionOptions(),
+    getTableSectionOptions(),
     getAssignmentsPage(
       tableState,
     ),
     getAssignmentForEdit(
-      assignmentEditFromCookie
-        ?.assignment_id || 0,
+      assignmentEditFromCookie?.assignment_id || 0,
     ),
   ]);
 
@@ -3388,6 +3442,11 @@ export default async function AssignmentsPage({
   const divisionOptions = tableDivisionRows.map((row) => ({
     value: row.division_code,
     label: row.division_name || row.division_code,
+  }));
+
+  const sectionOptions = tableSectionRows.map((row) => ({
+    value: row.section_code,
+    label: row.section_name || row.section_code,
   }));
 
   const roundEmployeeFormOptions = roundEmployeeOptions.map((row) => ({
@@ -3502,6 +3561,7 @@ export default async function AssignmentsPage({
         initialState={{ ...tableState, page: currentPage }}
         roundOptions={tableRoundOptions}
         divisionOptions={divisionOptions}
+        sectionOptions={sectionOptions}
         loadTableAction={loadAssignmentsTableClient}
         toggleEvaluatorRequiredTypeAction={toggleEvaluatorRequiredTypeClient}
         cancelEmployeeAssignmentsAction={cancelEmployeeAssignmentsClient}
