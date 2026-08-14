@@ -2,6 +2,7 @@ import ActionAlert from "@/components/competency/ActionAlert";
 import PageHeader from "@/components/competency/PageHeader";
 import {
   evaluatorLevelText,
+  getEvaluationFormData,
   getMyEvaluationAssignments,
   safeFetch,
   statusText,
@@ -18,16 +19,14 @@ import Script from "next/script";
 
 export const dynamic = "force-dynamic";
 
+const EVALUATION_ASSIGNMENT_COOKIE =
+  "competency_evaluation_assignment_id";
 const EVALUATION_RETURN_COOKIE =
   "competency_evaluation_return_path";
 const EVALUATION_NOTICE_COOKIE =
   "competency_evaluation_notice";
 const EVALUATION_OPEN_GROUP_COOKIE =
   "competency_evaluation_open_group";
-const EVALUATION_SECTION_COOKIE =
-  "competency_evaluation_section_code";
-const EVALUATION_ROUND_COOKIE =
-  "competency_evaluation_round_code";
 
 function shouldUseSecureCookie() {
   const cookieSecure = process.env.COOKIE_SECURE
@@ -47,9 +46,7 @@ type Notice = {
 
 type EvaluationGroup = {
   groupKey: string;
-  sectionCode: string;
-  roundCode: string;
-  sectionName: string;
+  divisionName: string;
   rows: EvaluationListRow[];
   submittedCount: number;
   totalCount: number;
@@ -275,24 +272,24 @@ function formatThaiDateTime(
   } ${yearBE} ${hour}:${minute}`;
 }
 
-function getSectionName(
+function getDivisionName(
   row: EvaluationListRow,
 ) {
-  const sectionName = String(
-    row.section_name || "",
+  const divisionName = String(
+    row.division_name || "",
   ).trim();
 
-  if (sectionName) {
-    return sectionName;
+  if (divisionName) {
+    return divisionName;
   }
 
-  const sectionCode = String(
-    row.section_code || "",
+  const divisionCode = String(
+    row.division_code || "",
   ).trim();
 
-  return sectionCode
-    ? `ไม่พบชื่อหน่วยงาน (${sectionCode})`
-    : "ไม่ระบุหน่วยงาน";
+  return divisionCode
+    ? `ไม่พบชื่อกลุ่มภารกิจ (${divisionCode})`
+    : "ไม่ระบุกลุ่มภารกิจ";
 }
 
 function groupRows(
@@ -304,23 +301,17 @@ function groupRows(
   >();
 
   for (const row of rows) {
-    const sectionName =
-      getSectionName(row);
-    const sectionCode = String(
-      row.section_code || "",
-    ).trim();
-    const roundCode = String(
-      row.round_code || "",
-    ).trim();
-
-    const groupKey = `${roundCode}__${sectionCode || "NO_SECTION"}`;
+    const divisionName =
+      getDivisionName(row);
+    const groupKey = `${
+      row.division_code ||
+      "NO_DIVISION"
+    }_${divisionName}`;
 
     if (!map.has(groupKey)) {
       map.set(groupKey, {
         groupKey,
-        sectionCode,
-        roundCode,
-        sectionName,
+        divisionName,
         rows: [],
         submittedCount: 0,
         totalCount: 0,
@@ -344,37 +335,35 @@ function groupRows(
 
   return Array.from(map.values()).sort(
     (first, second) =>
-      first.sectionName.localeCompare(
-        second.sectionName,
+      first.divisionName.localeCompare(
+        second.divisionName,
         "th",
       ),
   );
 }
 
 function EvaluationActionButton({
+  row,
   groupKey,
-  sectionCode,
-  roundCode,
   action,
 }: {
+  row: EvaluationListRow;
   groupKey: string;
-  sectionCode: string;
-  roundCode: string;
   action: (
     formData: FormData,
   ) => Promise<void>;
 }) {
+  const isSubmitted =
+    Number(
+      row.evaluation_status_type || 0,
+    ) === 1;
+
   return (
     <form action={action}>
       <input
         type="hidden"
-        name="section_code"
-        value={sectionCode}
-      />
-      <input
-        type="hidden"
-        name="round_code"
-        value={roundCode}
+        name="assignment_id"
+        value={row.assignment_id}
       />
       <input
         type="hidden"
@@ -383,9 +372,15 @@ function EvaluationActionButton({
       />
       <button
         type="submit"
-        className="inline-flex items-center rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white shadow-theme-xs hover:bg-brand-600"
+        className={`rounded-lg px-4 py-2 text-sm font-medium text-white shadow-theme-xs ${
+          isSubmitted
+            ? "bg-[#f8ac59] hover:bg-[#ee9a3a]"
+            : "bg-brand-500 hover:bg-brand-600"
+        }`}
       >
-        ประเมินทั้งหน่วยงาน
+        {isSubmitted
+          ? "แก้ไขการประเมิน"
+          : "ประเมิน"}
       </button>
     </form>
   );
@@ -455,54 +450,46 @@ export default async function EvaluationsPage() {
     const currentSession =
       await requireSession();
 
-    const sectionCode = String(
-      formData.get("section_code") || "",
-    ).trim();
+    const assignmentId = Number(
+      formData.get("assignment_id"),
+    );
 
-    const roundCode = String(
-      formData.get("round_code") || "",
-    ).trim();
+    if (
+      !Number.isInteger(assignmentId) ||
+      assignmentId <= 0
+    ) {
+      await setNoticeCookie(
+        "error",
+        "ไม่พบรายการประเมินที่ต้องการเปิด",
+      );
+
+      redirect("/evaluations");
+    }
 
     const groupKey = String(
       formData.get("group_key") || "",
     ).trim();
 
-    if (!sectionCode || !roundCode) {
+    const [data, moduleStatus] =
+      await Promise.all([
+        getEvaluationFormData(
+          assignmentId,
+          currentSession.emp_id,
+        ),
+        getCompetencyModuleStatus(
+          assignmentId,
+          currentSession.emp_id,
+        ),
+      ]);
+
+    if (!data) {
       await setNoticeCookie(
         "error",
-        "ไม่พบหน่วยงานหรือรอบประเมินที่ต้องการเปิด",
+        "รายการนี้อาจไม่ใช่ของผู้ใช้งานที่เข้าสู่ระบบ หรือถูกยกเลิกแล้ว",
       );
 
       redirect("/evaluations");
     }
-
-    const currentRows =
-      await getMyEvaluationAssignments(
-        currentSession.emp_id,
-      );
-
-    const targetRow = currentRows.find(
-      (row) =>
-        String(row.section_code || "").trim() ===
-          sectionCode &&
-        String(row.round_code || "").trim() ===
-          roundCode,
-    );
-
-    if (!targetRow) {
-      await setNoticeCookie(
-        "error",
-        "ไม่พบรายการประเมินของหน่วยงานนี้ หรือรายการอาจถูกยกเลิกแล้ว",
-      );
-
-      redirect("/evaluations");
-    }
-
-    const moduleStatus =
-      await getCompetencyModuleStatus(
-        targetRow.assignment_id,
-        currentSession.emp_id,
-      );
 
     if (moduleStatus !== 1) {
       await setNoticeCookie(
@@ -529,20 +516,8 @@ export default async function EvaluationsPage() {
     );
 
     currentCookieStore.set(
-      EVALUATION_SECTION_COOKIE,
-      encodeURIComponent(sectionCode),
-      {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: shouldUseSecureCookie(),
-        maxAge: 30 * 60,
-        path: "/",
-      },
-    );
-
-    currentCookieStore.set(
-      EVALUATION_ROUND_COOKIE,
-      encodeURIComponent(roundCode),
+      EVALUATION_ASSIGNMENT_COOKIE,
+      String(assignmentId),
       {
         httpOnly: true,
         sameSite: "lax",
@@ -599,7 +574,7 @@ export default async function EvaluationsPage() {
     <div>
       <PageHeader
         title="รายการประเมิน Competency"
-        description="รวมรายการที่ต้องประเมิน แสดงแยกตามหน่วยงาน (รหัสหน่วยงาน 5 หลัก) และเปิดประเมินทั้งหน่วยงานได้ในครั้งเดียว"
+        description="รวมรายการที่ต้องประเมินและรายการที่ส่งผลแล้ว แสดงแยกตามกลุ่มภารกิจของผู้ถูกประเมิน"
       />
 
       {notice && (
@@ -676,11 +651,11 @@ export default async function EvaluationsPage() {
                     <div className="md:col-span-5">
                       <p className="font-semibold text-gray-800 dark:text-white/90">
                         {
-                          group.sectionName
+                          group.divisionName
                         }
                       </p>
                       <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                        รหัสหน่วยงาน {group.sectionCode || "-"} • แสดงเจ้าหน้าที่ทั้งหมดในหน่วยงาน
+                        คลิกเพื่อแสดงรายชื่อผู้ถูกประเมิน
                       </p>
                     </div>
 
@@ -715,12 +690,12 @@ export default async function EvaluationsPage() {
                     </div>
 
                     <div className="text-left md:col-span-2 md:text-right">
-                      <EvaluationActionButton
-                        groupKey={group.groupKey}
-                        sectionCode={group.sectionCode}
-                        roundCode={group.roundCode}
-                        action={openEvaluationForm}
-                      />
+                      <span className="inline-flex rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600 group-open:hidden dark:bg-gray-800 dark:text-gray-300">
+                        เปิดดู
+                      </span>
+                      <span className="hidden rounded-full bg-[#23c6c8] px-3 py-1 text-xs font-medium text-white group-open:inline-flex">
+                        กำลังแสดงรายชื่อ
+                      </span>
                     </div>
                   </summary>
 
@@ -736,6 +711,7 @@ export default async function EvaluationsPage() {
                             "สถานะ",
                             "คะแนนรวม",
                             "วันที่ส่งผล",
+                            "",
                           ].map(
                             (header) => (
                               <th
@@ -821,7 +797,17 @@ export default async function EvaluationsPage() {
                                   )}
                                 </td>
 
-
+                                <td className="px-4 py-3 text-right text-sm">
+                                  <EvaluationActionButton
+                                    row={row}
+                                    groupKey={
+                                      group.groupKey
+                                    }
+                                    action={
+                                      openEvaluationForm
+                                    }
+                                  />
+                                </td>
                               </tr>
                             );
                           },
