@@ -1008,8 +1008,7 @@ export default function DepartmentEvaluationForm({
       {forms.map((form) => (
         <EmployeeEvaluationBlock
           key={
-            form.assignment
-              .assignment_id
+            form.assignment.assignment_id
           }
           form={form}
           templates={currentTemplates}
