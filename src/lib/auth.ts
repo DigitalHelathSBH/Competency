@@ -22,7 +22,7 @@ export async function loginWithEmp(username: string, password: string): Promise<
           CAST(
             CASE
               WHEN p.PAYROLLNO IS NULL THEN e.EmpID
-              ELSE ${ssbDb}.dbo.GetUserFullName(p.PAYROLLNO)
+              ELSE ${ssbDb}.dbo.GetSSBName(p.FIRSTTHAINAME) +' '+ ${ssbDb}.dbo.GetSSBName(p.LASTTHAINAME)
             END AS nvarchar(255)
           ) AS full_name,
           au.admin_role_type AS admin_role_type
