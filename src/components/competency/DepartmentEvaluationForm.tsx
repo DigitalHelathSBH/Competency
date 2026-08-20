@@ -919,16 +919,16 @@ export default function DepartmentEvaluationForm({
         }
 
         const totalScore =
-          Object.values(scores).reduce(
-            (sum, score) => {
-              const value = Number(score);
+        Object.values(scores).reduce<number>(
+          (sum, score) => {
+            const value = Number(score);
 
-              return Number.isFinite(value)
-                ? sum + value
-                : sum;
-            },
-            0,
-          );
+            return Number.isFinite(value)
+              ? sum + value
+              : sum;
+          },
+          0,
+        );
 
         return {
           ...template,
