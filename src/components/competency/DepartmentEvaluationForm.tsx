@@ -39,69 +39,6 @@ type DepartmentEvaluationFormProps = {
 const DEFAULT_SCORE = 3;
 const DEFAULT_TEMPLATE_KEY = "__default__";
 
-const handleTemplateUpdate = (
-    assignmentId: number,
-    details: SaveDetail[],
-  ) => {
-    setCurrentTemplates((current) =>
-      current.map((template) => {
-        if (
-          template.template_assignment_id !==
-          assignmentId
-        ) {
-          return template;
-        }
-
-        const targetForm = forms.find(
-          (item) =>
-            item.assignment.assignment_id ===
-            assignmentId,
-        );
-
-        if (!targetForm) {
-          return template;
-        }
-
-        const scores = {
-          ...template.scores,
-        };
-
-        for (const detail of details) {
-          const question =
-            targetForm.questions.find(
-              (item) =>
-                item.round_question_id ===
-                detail.round_question_id,
-            );
-
-          if (!question) continue;
-
-          scores[question.question_no] =
-            detail.score;
-        }
-
-        const totalScore =
-          Object.values(scores).reduce(
-            (sum, score) => {
-              const value = Number(score);
-
-              return Number.isFinite(value)
-                ? sum + value
-                : sum;
-            },
-            0,
-          );
-
-        return {
-          ...template,
-          scores,
-          total_score: totalScore,
-          evaluation_status_type: 1,
-        };
-      }),
-    );
-  };
-
 function getDisplayScore(
   score: number | null,
   maxScore: number,
