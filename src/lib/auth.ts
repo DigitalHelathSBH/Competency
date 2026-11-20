@@ -19,19 +19,19 @@ export async function loginWithEmp(username: string, password: string): Promise<
     .query(`
       SELECT TOP 1
           CAST(e.EmpID AS varchar(20)) AS emp_id,
-          CAST(ISNULL(p.PAYROLLNO, e.EmpID) AS varchar(20)) AS payroll_no,
+          CAST(p.PAYROLLNO AS varchar(20)) AS payroll_no,
           CAST(
-            CASE
-              WHEN p.PAYROLLNO IS NULL THEN e.EmpID
-              ELSE ${ssbDb}.dbo.GetSSBName(p.FIRSTTHAINAME) +' '+ ${ssbDb}.dbo.GetSSBName(p.LASTTHAINAME)
-            END AS nvarchar(255)
+            ${ssbDb}.dbo.GetSSBName(p.FIRSTTHAINAME) +' '+ ${ssbDb}.dbo.GetSSBName(p.LASTTHAINAME)
+            AS nvarchar(255)
           ) AS full_name,
           au.admin_role_type AS admin_role_type,
           CASE WHEN au.emp_id IS NULL THEN 0 ELSE 1 END AS is_evaluator
       FROM dbo.Emp e
-      LEFT JOIN ${ssbDb}.dbo.PYREXT p
-          ON e.EmpID = p.PAYROLLNO
-      -- ทุกคนใน Emp login ได้; ไม่อยู่ใน competency_admin_user = บุคลากรทั่วไป (ดูแบบสรุปของตัวเองเท่านั้น)
+      -- login ได้เฉพาะรหัสที่ยังทำงานอยู่ใน PYREXT (ไม่มีวันพ้นสภาพ) ใช้กับทุกสิทธิ์รวม admin/ผู้ประเมิน
+      JOIN ${ssbDb}.dbo.PYREXT p
+          ON p.PAYROLLNO = e.EmpID
+         AND p.TERMINATEDATE IS NULL
+      -- ไม่อยู่ใน competency_admin_user = บุคลากรทั่วไป (ดูแบบสรุปของตัวเองเท่านั้น)
       OUTER APPLY (
           SELECT TOP 1 x.emp_id, x.admin_role_type
           FROM dbo.competency_admin_user x
