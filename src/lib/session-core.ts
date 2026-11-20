@@ -3,8 +3,17 @@ export type AppSession = {
   payroll_no: string;
   full_name: string;
   is_admin: boolean;
+  // false = บุคลากรทั่วไป (ไม่อยู่ใน competency_admin_user) ดูได้เฉพาะแบบสรุปผลของตัวเอง
+  // token เก่าไม่มี field นี้ และออกให้เฉพาะคนใน competency_admin_user จึงถือว่าเป็นผู้ประเมิน
+  is_evaluator?: boolean;
   exp: number;
 };
+
+export const STAFF_HOME_PATH = "/evaluation-summary";
+
+export function isStaffOnly(session: Pick<AppSession, "is_admin" | "is_evaluator">) {
+  return !session.is_admin && session.is_evaluator === false;
+}
 
 const SESSION_COOKIE_NAME = "competency_session";
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 8; // 8 hours

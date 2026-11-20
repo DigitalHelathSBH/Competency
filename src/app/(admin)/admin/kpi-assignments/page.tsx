@@ -422,23 +422,9 @@ async function getRows() {
         )
           AS full_name
       FROM ${ssbDb()}.dbo.PYREXT employee_pyrext
-      WHERE LTRIM(
-              RTRIM(
-                CAST(
-                  employee_pyrext.PAYROLLNO
-                  AS varchar(20)
-                )
-              )
-            )
+      WHERE employee_pyrext.PAYROLLNO
           =
-            LTRIM(
-              RTRIM(
-                CAST(
-                  re.payroll_no
-                  AS varchar(20)
-                )
-              )
-            )
+            re.payroll_no
       ORDER BY
         CASE
           WHEN employee_pyrext.TERMINATEDATE IS NULL
@@ -471,23 +457,9 @@ async function getRows() {
         )
           AS full_name
       FROM ${ssbDb()}.dbo.PYREXT competency_evaluator_pyrext
-      WHERE LTRIM(
-              RTRIM(
-                CAST(
-                  competency_evaluator_pyrext.PAYROLLNO
-                  AS varchar(20)
-                )
-              )
-            )
+      WHERE competency_evaluator_pyrext.PAYROLLNO
           =
-            LTRIM(
-              RTRIM(
-                CAST(
-                  competency_assignment.evaluator_payroll_no
-                  AS varchar(20)
-                )
-              )
-            )
+            competency_assignment.evaluator_payroll_no
       ORDER BY
         CASE
           WHEN competency_evaluator_pyrext.TERMINATEDATE IS NULL
@@ -520,23 +492,9 @@ async function getRows() {
         )
           AS full_name
       FROM ${ssbDb()}.dbo.PYREXT kpi_evaluator_pyrext
-      WHERE LTRIM(
-              RTRIM(
-                CAST(
-                  kpi_evaluator_pyrext.PAYROLLNO
-                  AS varchar(20)
-                )
-              )
-            )
+      WHERE kpi_evaluator_pyrext.PAYROLLNO
           =
-            LTRIM(
-              RTRIM(
-                CAST(
-                  kpi_assignment.evaluator_payroll_no
-                  AS varchar(20)
-                )
-              )
-            )
+            kpi_assignment.evaluator_payroll_no
       ORDER BY
         CASE
           WHEN kpi_evaluator_pyrext.TERMINATEDATE IS NULL
@@ -1046,13 +1004,7 @@ export default async function KpiAssignmentsPage() {
               SELECT 1
               FROM ${ssbDb()}.dbo.PYREXT p
               WHERE p.TERMINATEDATE IS NULL
-                AND LTRIM(
-                      RTRIM(
-                        CAST(
-                          p.PAYROLLNO AS varchar(20)
-                        )
-                      )
-                    ) =
+                AND p.PAYROLLNO =
                     @evaluator_payroll_no
             )
             BEGIN
@@ -1136,13 +1088,7 @@ export default async function KpiAssignmentsPage() {
             JOIN dbo.competency_round_employee re
               ON re.round_employee_id =
                  s.round_employee_id
-            WHERE LTRIM(
-                    RTRIM(
-                      CAST(
-                        re.payroll_no AS varchar(20)
-                      )
-                    )
-                  ) = @evaluator_payroll_no;
+            WHERE re.payroll_no = @evaluator_payroll_no;
 
             SELECT
               @blocked_count = COUNT(*)
@@ -1169,11 +1115,7 @@ export default async function KpiAssignmentsPage() {
              AND k.status_type = 0
              AND k.assignment_source_type =
                  'MANUAL'
-             AND LTRIM(
-                   RTRIM(
-                     k.evaluator_payroll_no
-                   )
-                 ) = @evaluator_payroll_no
+             AND k.evaluator_payroll_no = @evaluator_payroll_no
             WHERE NOT EXISTS
             (
               SELECT 1
@@ -1210,11 +1152,7 @@ export default async function KpiAssignmentsPage() {
               (
                 k.assignment_source_type =
                   'MANUAL'
-                AND LTRIM(
-                      RTRIM(
-                        k.evaluator_payroll_no
-                      )
-                    ) =
+                AND k.evaluator_payroll_no =
                     @evaluator_payroll_no
               )
               AND NOT EXISTS

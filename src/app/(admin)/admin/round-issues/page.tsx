@@ -508,14 +508,7 @@ function getIssueSourceSql() {
       LEFT JOIN PyrextResolved
         employee_name
         ON employee_name.payroll_no =
-           LTRIM(
-             RTRIM(
-               CAST(
-                 employee_base.payroll_no
-                 AS varchar(20)
-               )
-             )
-           )
+           employee_base.payroll_no
     ),
     EvaluatorBase AS (
       SELECT
@@ -540,11 +533,7 @@ function getIssueSourceSql() {
         ON ri.round_id = re.round_id
       LEFT JOIN PyrextResolved p
         ON p.payroll_no =
-           LTRIM(
-             RTRIM(
-               a.evaluator_payroll_no
-             )
-           )
+           a.evaluator_payroll_no
       WHERE a.status_type <> 9
     ),
     EvaluatorCalc AS (
@@ -1441,8 +1430,8 @@ function getIssueSourceSql() {
       JOIN dbo.kpi_evaluator_assignment k
         ON k.round_employee_id = re.round_employee_id
        AND k.status_type = 0
-      WHERE LTRIM(RTRIM(k.evaluator_payroll_no))
-          = LTRIM(RTRIM(re.payroll_no))
+      WHERE k.evaluator_payroll_no
+          = re.payroll_no
 
       UNION ALL
 
@@ -1464,7 +1453,7 @@ function getIssueSourceSql() {
         ON k.round_employee_id = re.round_employee_id
        AND k.status_type = 0
       LEFT JOIN ${ssbDb()}.dbo.PYREXT p
-        ON CAST(p.PAYROLLNO AS varchar(20))
+        ON p.PAYROLLNO
            = k.evaluator_payroll_no
       WHERE p.PAYROLLNO IS NULL
          OR p.TERMINATEDATE IS NOT NULL
@@ -1520,8 +1509,8 @@ function getIssueSourceSql() {
              AND ca.round_employee_id = k.round_employee_id
              AND ca.evaluator_level = 1
              AND ca.status_type <> 9
-             AND LTRIM(RTRIM(ca.evaluator_payroll_no))
-                 = LTRIM(RTRIM(k.evaluator_payroll_no))
+             AND ca.evaluator_payroll_no
+                 = k.evaluator_payroll_no
          )
     ),
     IssueSource AS

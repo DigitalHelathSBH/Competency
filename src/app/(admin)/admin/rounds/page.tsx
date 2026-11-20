@@ -395,7 +395,7 @@ export default async function AdminRoundsPage({
                 CAST(@start_date AS date) AS start_date
               FROM dbo.competency_round_employee re
               JOIN ${ssbDb()}.dbo.PYREXT p
-                ON CAST(p.PAYROLLNO AS varchar(20)) = re.payroll_no
+                ON p.PAYROLLNO = re.payroll_no
                AND p.TERMINATEDATE IS NULL
               WHERE re.round_id = @round_id
             ),
@@ -664,7 +664,7 @@ export default async function AdminRoundsPage({
                 ) AS row_no
               FROM dbo.competency_round_employee src_re
               JOIN ${ssbDb()}.dbo.PYREXT p
-                ON CAST(p.PAYROLLNO AS varchar(20)) = src_re.payroll_no
+                ON p.PAYROLLNO = src_re.payroll_no
                AND p.TERMINATEDATE IS NULL
               JOIN dbo.competency_round target_round
                 ON target_round.round_id = @target_round_id
@@ -851,7 +851,7 @@ export default async function AdminRoundsPage({
                AND target_re.payroll_no = src_re.payroll_no
                AND target_re.status_type <> 9
               JOIN ${ssbDb()}.dbo.PYREXT ev
-                ON CAST(ev.PAYROLLNO AS varchar(20)) = src_a.evaluator_payroll_no
+                ON ev.PAYROLLNO = src_a.evaluator_payroll_no
                AND ev.TERMINATEDATE IS NULL
               JOIN dbo.competency_round target_round
                 ON target_round.round_id = @target_round_id
@@ -1155,7 +1155,7 @@ export default async function AdminRoundsPage({
             JOIN dbo.competency_round r
               ON r.round_id = re.round_id
             LEFT JOIN ${ssbDb()}.dbo.PYREXT ev
-              ON CAST(ev.PAYROLLNO AS varchar(20)) = ea.evaluator_payroll_no
+              ON ev.PAYROLLNO = ea.evaluator_payroll_no
             WHERE ea.status_type <> 9
           ),
           evaluator_calc AS (
@@ -1932,8 +1932,8 @@ export default async function AdminRoundsPage({
             SUM(
               CASE
                 WHEN k.kpi_assignment_id IS NOT NULL
-                 AND LTRIM(RTRIM(k.evaluator_payroll_no))
-                     = LTRIM(RTRIM(re.payroll_no))
+                 AND k.evaluator_payroll_no
+                     = re.payroll_no
                 THEN 1
                 ELSE 0
               END
@@ -1975,8 +1975,8 @@ export default async function AdminRoundsPage({
           LEFT JOIN dbo.competency_evaluator_assignment source_assignment
             ON source_assignment.assignment_id = k.source_competency_assignment_id
           LEFT JOIN ${ssbDb()}.dbo.PYREXT ev
-            ON LTRIM(RTRIM(CAST(ev.PAYROLLNO AS varchar(20))))
-               = LTRIM(RTRIM(k.evaluator_payroll_no))
+            ON ev.PAYROLLNO
+               = k.evaluator_payroll_no
           WHERE re.round_id = @round_id
             AND re.status_type <> 9;
         `);

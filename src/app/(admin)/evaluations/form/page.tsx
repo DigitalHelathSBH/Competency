@@ -223,22 +223,8 @@ async function getSectionEvaluationFormData(
               )
             FROM ${ssbDb}.dbo.PYREXT
               employee_name_source
-            WHERE LTRIM(
-                    RTRIM(
-                      CAST(
-                        employee_name_source.PAYROLLNO
-                        AS varchar(20)
-                      )
-                    )
-                  ) =
-                  LTRIM(
-                    RTRIM(
-                      CAST(
-                        re.payroll_no
-                        AS varchar(20)
-                      )
-                    )
-                  )
+            WHERE employee_name_source.PAYROLLNO =
+                  re.payroll_no
             ORDER BY
               CASE
                 WHEN employee_name_source.TERMINATEDATE
@@ -505,11 +491,7 @@ async function getSectionEvaluationScoreTemplates(
               N''
             )
           FROM ${ssbDb}.dbo.PYREXT employee_name_source
-          WHERE LTRIM(RTRIM(CAST(
-            employee_name_source.PAYROLLNO AS varchar(20)
-          ))) = LTRIM(RTRIM(CAST(
-            ee.employee_payroll_no AS varchar(20)
-          )))
+          WHERE employee_name_source.PAYROLLNO = ee.employee_payroll_no
           ORDER BY
             CASE
               WHEN employee_name_source.TERMINATEDATE IS NULL

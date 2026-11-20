@@ -52,7 +52,7 @@ function ssbDb() {
   );
 }
 
-function useSecureCookie() {
+function shouldUseSecureCookie() {
   const configured = String(
     process.env.COOKIE_SECURE || "",
   )
@@ -151,11 +151,7 @@ async function getKpiRounds(
         AND
         (
           @is_admin = 1
-          OR LTRIM(
-               RTRIM(
-                 k.evaluator_payroll_no
-               )
-             ) = @payroll_no
+          OR k.evaluator_payroll_no = @payroll_no
         )
       ORDER BY
         status_sort,
@@ -365,12 +361,7 @@ async function getRoundEmployeeInfo(
                   re.round_employee_id
               AND competency_assignment
                     .status_type <> 9
-              AND LTRIM(
-                    RTRIM(
-                      competency_assignment
-                        .evaluator_payroll_no
-                    )
-                  ) = @payroll_no
+              AND competency_assignment.evaluator_payroll_no = @payroll_no
           )
 
           OR EXISTS
@@ -383,12 +374,7 @@ async function getRoundEmployeeInfo(
                   re.round_employee_id
               AND kpi_assignment
                     .status_type = 0
-              AND LTRIM(
-                    RTRIM(
-                      kpi_assignment
-                        .evaluator_payroll_no
-                    )
-                  ) = @payroll_no
+              AND kpi_assignment.evaluator_payroll_no = @payroll_no
           )
         )
 
@@ -438,220 +424,49 @@ async function getRoundEmployeeInfo(
   })) as RoundEmployeeInfo[];
 }
 
-async function getKpiRows(
-  roundId: number,
-  payrollNo: string,
-  isAdmin: boolean,
-) {
+/*
+  ผล KPI ยังประเมินในโปรแกรม KPI เดิม (ฐาน KPI) จึงอ่านคะแนนสุดท้ายจาก
+  KPI.dbo.FinalResultByPeriodID โดยจับคู่รอบด้วยชื่อรอบ "รอบที่ {no}/{year}"
+*/
+async function getLegacyKpiRows(roundCode: string) {
+  const [yearText, noText] = roundCode.split("/");
   const pool = await getDbPool();
-
-  /*
-    ตารางผล KPI ของแต่ละฐานข้อมูลอาจใช้ชื่อคอลัมน์เชื่อมกับ
-    รายการผู้ประเมินไม่เหมือนกัน จึงตรวจโครงสร้างจริงก่อนสร้าง Query
-    เพื่อไม่อ้างคอลัมน์ที่ไม่มีอยู่ และยังเลือกผลของผู้ประเมินที่ใช้งานอยู่
-  */
-  const columnResult = await pool.request().query(`
-    SELECT
-      t.name AS table_name,
-      c.name AS column_name
-    FROM sys.tables t
-    JOIN sys.schemas s
-      ON s.schema_id = t.schema_id
-    JOIN sys.columns c
-      ON c.object_id = t.object_id
-    WHERE s.name = 'dbo'
-      AND t.name IN (
-        'kpi_evaluation',
-        'kpi_evaluator_assignment'
-      );
-  `);
-
-  const evaluationColumns = new Set<string>();
-  const assignmentColumns = new Set<string>();
-
-  for (const row of columnResult.recordset as Array<{
-    table_name: string;
-    column_name: string;
-  }>) {
-    const tableName = String(row.table_name || "").toLowerCase();
-    const columnName = String(row.column_name || "").toLowerCase();
-
-    if (tableName === "kpi_evaluation") {
-      evaluationColumns.add(columnName);
-    }
-
-    if (tableName === "kpi_evaluator_assignment") {
-      assignmentColumns.add(columnName);
-    }
-  }
-
-  let evaluationAssignmentCondition = "";
-
-  if (
-    evaluationColumns.has("kpi_assignment_id") &&
-    assignmentColumns.has("kpi_assignment_id")
-  ) {
-    evaluationAssignmentCondition = `
-      AND ev.kpi_assignment_id =
-          k.kpi_assignment_id
-    `;
-  } else if (
-    evaluationColumns.has("kpi_evaluator_assignment_id") &&
-    assignmentColumns.has("kpi_evaluator_assignment_id")
-  ) {
-    evaluationAssignmentCondition = `
-      AND ev.kpi_evaluator_assignment_id =
-          k.kpi_evaluator_assignment_id
-    `;
-  } else if (
-    evaluationColumns.has("assignment_id") &&
-    assignmentColumns.has("assignment_id")
-  ) {
-    evaluationAssignmentCondition = `
-      AND ev.assignment_id =
-          k.assignment_id
-    `;
-  } else if (
-    evaluationColumns.has("evaluator_payroll_no")
-  ) {
-    evaluationAssignmentCondition = `
-      AND LTRIM(RTRIM(ev.evaluator_payroll_no)) =
-          LTRIM(RTRIM(k.evaluator_payroll_no))
-    `;
-  }
 
   const result = await pool
     .request()
     .input(
-      "round_id",
-      sql.Int,
-      roundId,
-    )
-    .input(
-      "payroll_no",
-      sql.VarChar(20),
-      payrollNo,
-    )
-    .input(
-      "is_admin",
-      sql.Bit,
-      isAdmin,
+      "period_like",
+      sql.NVarChar(50),
+      `%รอบที่ ${Number(noText)}/${Number(yearText)}%`,
     )
     .query(`
-      SELECT
-        LTRIM(
-          RTRIM(
-            CAST(
-              re.payroll_no
-              AS varchar(20)
-            )
-          )
-        ) AS payroll_no,
-
-        f.form_code,
-        f.form_name,
-
-        LTRIM(
-          RTRIM(
-            k.evaluator_payroll_no
-          )
-        ) AS evaluator_payroll_no,
-
-        ${ssbDb()}.dbo.GetUserFullName(
-          k.evaluator_payroll_no
-        ) AS evaluator_full_name,
-
-        latest_evaluation.status_type
-          AS evaluation_status_type,
-
-        latest_evaluation
-          .total_kpi_score
-
-      FROM dbo.kpi_evaluator_assignment k
-
-      JOIN dbo.competency_round_employee re
-        ON re.round_employee_id =
-           k.round_employee_id
-       AND re.status_type <> 9
-
-      JOIN dbo.competency_round r
-        ON r.round_id = re.round_id
-       AND r.status_type <> 9
-
-      JOIN dbo.kpi_employee_form ef
-        ON ef.round_employee_id =
-           re.round_employee_id
-       AND ef.status_type = 0
-
-      JOIN dbo.kpi_form_version fv
-        ON fv.form_version_id =
-           ef.form_version_id
-
-      JOIN dbo.kpi_form f
-        ON f.form_id = fv.form_id
-
-      OUTER APPLY
+      DECLARE @period_id int =
       (
-        SELECT TOP (1)
-          ev.status_type,
-          ev.total_kpi_score
-        FROM dbo.kpi_evaluation ev
-        WHERE ev.employee_form_id =
-              ef.employee_form_id
-          ${evaluationAssignmentCondition}
-          AND ev.status_type <> 9
-        ORDER BY
-          ev.evaluation_id DESC
-      ) latest_evaluation
+        SELECT TOP (1) PeriodID
+        FROM KPI.dbo.PeriodTbl
+        WHERE PeriodName LIKE @period_like
+        ORDER BY PeriodID DESC
+      );
 
-      WHERE re.round_id = @round_id
-        AND k.status_type = 0
-        AND
-        (
-          @is_admin = 1
-          OR LTRIM(
-               RTRIM(
-                 k.evaluator_payroll_no
-               )
-             ) = @payroll_no
-        );
+      SELECT
+        LTRIM(RTRIM(PayrollNo)) AS payroll_no,
+        finalPercentage
+      FROM KPI.dbo.FinalResultByPeriodID(@period_id)
+      WHERE @period_id IS NOT NULL;
     `);
 
   return result.recordset.map((row) => ({
-    payroll_no: String(
-      row.payroll_no || "",
-    ).trim(),
-    form_code: String(
-      row.form_code || "",
-    ).trim(),
-    form_name: String(
-      row.form_name || "",
-    ).trim(),
-    evaluator_payroll_no: String(
-      row.evaluator_payroll_no || "",
-    ).trim(),
-    evaluator_full_name: String(
-      row.evaluator_full_name ||
-        row.evaluator_payroll_no ||
-        "",
-    ).trim(),
-    evaluation_status_type:
-      row.evaluation_status_type ===
-        null ||
-      row.evaluation_status_type ===
-        undefined
-        ? null
-        : Number(
-            row.evaluation_status_type,
-          ),
+    payroll_no: String(row.payroll_no || "").trim(),
+    form_code: "",
+    form_name: "ฐาน KPI เดิม",
+    evaluator_payroll_no: "",
+    evaluator_full_name: "",
+    evaluation_status_type: 1,
     total_kpi_score:
-      row.total_kpi_score === null ||
-      row.total_kpi_score ===
-        undefined
+      row.finalPercentage === null ||
+      row.finalPercentage === undefined
         ? null
-        : Number(
-            row.total_kpi_score,
-          ),
+        : Number(row.finalPercentage),
   })) as KpiPerformanceRow[];
 }
 
@@ -904,7 +719,6 @@ function mergeReportRows(
           competency?.section_name ||
             "",
         ).trim(),
-
       competency_percent:
         percentIsValid
           ? Number(
@@ -1060,7 +874,7 @@ export default async function PerformanceReportsPage() {
     }
   }
 
-  const [employeeRows, kpiRows] =
+  const [employeeRows, legacyKpiRows] =
     selectedRound
       ? await Promise.all([
           getRoundEmployeeInfo(
@@ -1068,16 +882,21 @@ export default async function PerformanceReportsPage() {
             session.emp_id,
             session.is_admin,
           ),
-          getKpiRows(
-            selectedRound.round_id,
-            session.emp_id,
-            session.is_admin,
-          ),
+          getLegacyKpiRows(selectedRound.round_code),
         ])
       : [
           [] as RoundEmployeeInfo[],
           [] as KpiPerformanceRow[],
         ];
+
+  const visiblePayrollNos = new Set(
+    employeeRows.map((row) => row.payroll_no),
+  );
+  const kpiRows = session.is_admin
+    ? legacyKpiRows
+    : legacyKpiRows.filter((row) =>
+        visiblePayrollNos.has(row.payroll_no),
+      );
 
   const rows = selectedRound
     ? mergeReportRows(
@@ -1136,7 +955,7 @@ export default async function PerformanceReportsPage() {
         {
           httpOnly: true,
           sameSite: "lax",
-          secure: useSecureCookie(),
+          secure: shouldUseSecureCookie(),
           maxAge: 60 * 60 * 8,
           path: "/",
         },

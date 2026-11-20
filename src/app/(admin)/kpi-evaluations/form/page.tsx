@@ -250,23 +250,9 @@ async function getKpiEvaluationFormData(
         )
           AS full_name
       FROM ${ssbDb()}.dbo.PYREXT employee_pyrext
-      WHERE LTRIM(
-              RTRIM(
-                CAST(
-                  employee_pyrext.PAYROLLNO
-                  AS varchar(20)
-                )
-              )
-            )
+      WHERE employee_pyrext.PAYROLLNO
           =
-            LTRIM(
-              RTRIM(
-                CAST(
-                  re.payroll_no
-                  AS varchar(20)
-                )
-              )
-            )
+            re.payroll_no
       ORDER BY
         CASE
           WHEN employee_pyrext.TERMINATEDATE IS NULL

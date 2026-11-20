@@ -225,6 +225,7 @@ type CurrentUser = {
   full_name: string;
   emp_id: string;
   is_admin: boolean;
+  is_evaluator?: boolean;
 };
 
 const appBasePath = (process.env.NEXT_PUBLIC_BASE_PATH || "").replace(/\/+$/, "");
@@ -264,6 +265,11 @@ const evaluatorReportItems: Array<
     icon: <CombinedReportIcon />,
     name: "ผลรวมการประเมิน",
     path: "/performance-reports",
+  },
+  {
+    icon: <ReportIcon />,
+    name: "แบบสรุปผลการประเมิน",
+    path: "/evaluation-summary",
   },
 ];
 
@@ -364,6 +370,7 @@ const adminGroups: NavGroup[] = [
         name: "ผลรวมการประเมิน",
         path: "/performance-reports",
       },
+      { name: "แบบสรุปผลการประเมิน", path: "/evaluation-summary" },
     ],
   },
 ];
@@ -423,6 +430,10 @@ const AppSidebar: React.FC = () => {
   const showText = isExpanded || isHovered || isMobileOpen;
 
   const visibleMainItems = useMemo(() => {
+    if (user && !user.is_admin && user.is_evaluator === false) {
+      return evaluatorReportItems.filter((item) => item.path === "/evaluation-summary");
+    }
+
     if (user && !user.is_admin) {
       return [...mainItems, ...evaluatorReportItems];
     }

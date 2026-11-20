@@ -5,6 +5,7 @@ export type LoginUser = {
   payroll_no: string;
   full_name: string;
   is_admin: boolean;
+  is_evaluator: boolean;
 };
 
 export async function loginWithEmp(username: string, password: string): Promise<LoginUser | null> {
@@ -25,14 +26,20 @@ export async function loginWithEmp(username: string, password: string): Promise<
               ELSE ${ssbDb}.dbo.GetSSBName(p.FIRSTTHAINAME) +' '+ ${ssbDb}.dbo.GetSSBName(p.LASTTHAINAME)
             END AS nvarchar(255)
           ) AS full_name,
-          au.admin_role_type AS admin_role_type
+          au.admin_role_type AS admin_role_type,
+          CASE WHEN au.emp_id IS NULL THEN 0 ELSE 1 END AS is_evaluator
       FROM dbo.Emp e
       LEFT JOIN ${ssbDb}.dbo.PYREXT p
-          ON CAST(e.EmpID AS varchar(20)) = CAST(p.PAYROLLNO AS varchar(20))
-      INNER JOIN dbo.competency_admin_user au
-          ON au.emp_id = CAST(e.EmpID AS varchar(20))
-          AND au.active_status = 1
-      WHERE CAST(e.EmpID AS varchar(20)) = @username
+          ON e.EmpID = p.PAYROLLNO
+      -- ทุกคนใน Emp login ได้; ไม่อยู่ใน competency_admin_user = บุคลากรทั่วไป (ดูแบบสรุปของตัวเองเท่านั้น)
+      OUTER APPLY (
+          SELECT TOP 1 x.emp_id, x.admin_role_type
+          FROM dbo.competency_admin_user x
+          WHERE x.emp_id = e.EmpID
+            AND x.active_status = 1
+          ORDER BY CASE WHEN x.admin_role_type = 1 THEN 0 ELSE 1 END
+      ) au
+      WHERE e.EmpID = @username
         AND CAST(e.PassWord AS varchar(100)) = @password;
     `);
 
@@ -44,5 +51,6 @@ export async function loginWithEmp(username: string, password: string): Promise<
     payroll_no: row.payroll_no,
     full_name: row.full_name || row.emp_id,
     is_admin: Number(row.admin_role_type) === 1,
+    is_evaluator: Number(row.is_evaluator) === 1,
   };
 }

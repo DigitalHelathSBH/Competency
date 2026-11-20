@@ -169,8 +169,8 @@ export async function getMyAssignments(
             N''
           )
         FROM ${ssbDb()}.dbo.PYREXT employee_name_source
-        WHERE LTRIM(RTRIM(CAST(employee_name_source.PAYROLLNO AS varchar(20))))
-            = LTRIM(RTRIM(CAST(re.payroll_no AS varchar(20))))
+        WHERE employee_name_source.PAYROLLNO
+            = re.payroll_no
         ORDER BY CASE WHEN employee_name_source.TERMINATEDATE IS NULL THEN 0 ELSE 1 END
       ) AS employee_full_name,
           re.position_code,
@@ -223,8 +223,8 @@ export async function getMyEvaluationAssignments(
             N''
           )
         FROM ${ssbDb()}.dbo.PYREXT employee_name_source
-        WHERE LTRIM(RTRIM(CAST(employee_name_source.PAYROLLNO AS varchar(20))))
-            = LTRIM(RTRIM(CAST(re.payroll_no AS varchar(20))))
+        WHERE employee_name_source.PAYROLLNO
+            = re.payroll_no
         ORDER BY CASE WHEN employee_name_source.TERMINATEDATE IS NULL THEN 0 ELSE 1 END
       ) AS employee_full_name,
           re.position_code,
@@ -305,8 +305,8 @@ export async function getEvaluationFormData(
             N''
           )
         FROM ${ssbDb()}.dbo.PYREXT employee_name_source
-        WHERE LTRIM(RTRIM(CAST(employee_name_source.PAYROLLNO AS varchar(20))))
-            = LTRIM(RTRIM(CAST(re.payroll_no AS varchar(20))))
+        WHERE employee_name_source.PAYROLLNO
+            = re.payroll_no
         ORDER BY CASE WHEN employee_name_source.TERMINATEDATE IS NULL THEN 0 ELSE 1 END
       ) AS employee_full_name,
           re.position_code,
@@ -402,8 +402,8 @@ export async function getEvaluationScoreTemplates(
             N''
           )
         FROM ${ssbDb()}.dbo.PYREXT employee_name_source
-        WHERE LTRIM(RTRIM(CAST(employee_name_source.PAYROLLNO AS varchar(20))))
-            = LTRIM(RTRIM(CAST(re2.payroll_no AS varchar(20))))
+        WHERE employee_name_source.PAYROLLNO
+            = re2.payroll_no
         ORDER BY CASE WHEN employee_name_source.TERMINATEDATE IS NULL THEN 0 ELSE 1 END
       ) AS employee_full_name,
           ev.status_type AS evaluation_status_type,
@@ -956,8 +956,8 @@ export async function getWeightedReport(
             N''
           )
         FROM ${ssbDb()}.dbo.PYREXT employee_name_source
-        WHERE LTRIM(RTRIM(CAST(employee_name_source.PAYROLLNO AS varchar(20))))
-            = LTRIM(RTRIM(CAST(re.payroll_no AS varchar(20))))
+        WHERE employee_name_source.PAYROLLNO
+            = re.payroll_no
         ORDER BY CASE WHEN employee_name_source.TERMINATEDATE IS NULL THEN 0 ELSE 1 END
       ) AS employee_full_name,
               re.division_code,
