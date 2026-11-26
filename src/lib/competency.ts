@@ -812,6 +812,7 @@ export type CompetencyReportRow = {
   competency_percent: number | null;
   final_score: number | null;
   competency_score: number | null;
+  weighted_raw_score: number | null; // Competency ดิบ 0-100 ถ่วงน้ำหนักรายข้อ
   level1_submitted_date: string | null;
   level2_submitted_date: string | null;
   report_status: string;
@@ -932,6 +933,7 @@ export async function getWeightedReport(
           row_data.competency_percent,
           row_data.final_score,
           row_data.competency_score,
+          row_data.weighted_raw_score,
           row_data.level1_submitted_date,
           row_data.level2_submitted_date,
           CASE
@@ -999,20 +1001,9 @@ export async function getWeightedReport(
                   END
                   AS decimal(8,2)
               ) AS final_score,
+              weighted.weighted_raw_score,
               CAST(
-                  CASE
-                      WHEN ISNULL(max_score_total.max_possible_score, 0) <= 0 THEN NULL
-                      ELSE
-                          (
-                              CASE
-                                  WHEN ISNULL(re.evaluator_required_type, 2) = 1
-                                      THEN ISNULL(level1.score, 0)
-                                  ELSE
-                                      ISNULL(level1.score, 0) * ISNULL(ISNULL(level1_weight.weight_percent, default_level1_weight.weight_percent), 0) / 100.0 +
-                                      ISNULL(level2.score, 0) * ISNULL(ISNULL(level2_weight.weight_percent, default_level2_weight.weight_percent), 0) / 100.0
-                              END
-                          ) * ISNULL(re.competency_percent, 20) / max_score_total.max_possible_score
-                  END
+                  ROUND(weighted.weighted_raw_score * ISNULL(re.competency_percent, 20) / 100.0, 2)
                   AS decimal(8,2)
               ) AS competency_score,
               level1.submitted_date AS level1_submitted_date,
@@ -1030,6 +1021,7 @@ export async function getWeightedReport(
           ) max_score_total
           OUTER APPLY (
               SELECT TOP 1
+                  ev.evaluation_id,
                   CAST(ev.total_score AS decimal(8,2)) AS score,
                   CASE WHEN ev.status_type = 1 THEN 1 ELSE 0 END AS is_submitted,
                   CONVERT(varchar(19), ev.submitted_date, 120) AS submitted_date
@@ -1044,6 +1036,7 @@ export async function getWeightedReport(
           ) level1
           OUTER APPLY (
               SELECT TOP 1
+                  ev.evaluation_id,
                   CAST(ev.total_score AS decimal(8,2)) AS score,
                   CASE WHEN ev.status_type = 1 THEN 1 ELSE 0 END AS is_submitted,
                   CONVERT(varchar(19), ev.submitted_date, 120) AS submitted_date
@@ -1092,6 +1085,43 @@ export async function getWeightedReport(
                 AND w.active_status = 1
               ORDER BY w.evaluator_weight_id DESC
           ) default_level2_weight
+          /*
+            คะแนน Competency ดิบ 0-100 แบบถ่วงน้ำหนักรายข้อตาม competency_round_question.weight_percent
+            (ชุด 7 ข้อ = 15x6 + 10, ชุด 4 ข้อ = 25x4) ไม่ได้แบ่งเท่ากันตาม max_score
+            ต้องตรงกับแบบสรุปผล (src/lib/evaluation-summary.ts) และ performance-report/make_report.py:
+            รวมคะแนนรายข้อก่อนปัด แล้วปัดผลรวม 2 ตำแหน่ง
+          */
+          OUTER APPLY (
+              SELECT
+                  CAST(ROUND(SUM(q.item_value / q.max_score * q.share), 2) AS decimal(8,2)) AS weighted_raw_score
+              FROM (
+                  SELECT
+                      CAST(crq.max_score AS decimal(8,2)) AS max_score,
+                      ISNULL(
+                          CAST(crq.weight_percent AS decimal(8,4)),
+                          CAST(crq.max_score AS decimal(8,4)) * 100 / NULLIF(max_score_total.max_possible_score, 0)
+                      ) AS share,
+                      CASE
+                          WHEN ISNULL(re.evaluator_required_type, 2) = 1
+                              THEN ISNULL(CAST(d1.score AS decimal(8,4)), 0)
+                          ELSE
+                              ISNULL(CAST(d1.score AS decimal(8,4)), 0) * ISNULL(ISNULL(level1_weight.weight_percent, default_level1_weight.weight_percent), 0) / 100.0 +
+                              ISNULL(CAST(d2.score AS decimal(8,4)), 0) * ISNULL(ISNULL(level2_weight.weight_percent, default_level2_weight.weight_percent), 0) / 100.0
+                      END AS item_value
+                  FROM dbo.competency_round_question crq
+                  LEFT JOIN dbo.competency_evaluation_detail d1
+                      ON d1.evaluation_id = level1.evaluation_id
+                     AND d1.round_question_id = crq.round_question_id
+                  LEFT JOIN dbo.competency_evaluation_detail d2
+                      ON d2.evaluation_id = level2.evaluation_id
+                     AND d2.round_question_id = crq.round_question_id
+                  WHERE crq.round_id = re.round_id
+                    AND crq.active_status = 1
+                    AND crq.max_score > 0
+                    AND (crq.position_code IS NULL OR crq.position_code = re.position_code)
+              ) q
+              WHERE ISNULL(max_score_total.max_possible_score, 0) > 0
+          ) weighted
           LEFT JOIN (
               SELECT
                   code,

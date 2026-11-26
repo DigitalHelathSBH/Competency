@@ -558,35 +558,12 @@ function mergeReportRows(
       competency?.report_status ===
       "น้ำหนักไม่ครบ 100%";
 
-    const finalScore =
-      competency?.final_score === null ||
-      competency?.final_score ===
-        undefined
-        ? null
-        : Number(
-            competency.final_score,
-          );
-
-    const maxPossibleScore =
-      competency?.max_possible_score ===
-        null ||
-      competency?.max_possible_score ===
-        undefined
-        ? null
-        : Number(
-            competency.max_possible_score,
-          );
-
+    // คะแนนดิบ 0-100 ถ่วงน้ำหนักรายข้อ (15x6+10 / 25x4) คำนวณใน getWeightedReport
     const competencyRawScore =
       competencyCompleted &&
-      finalScore !== null &&
-      maxPossibleScore !== null &&
-      maxPossibleScore > 0
-        ? round2(
-            (finalScore /
-              maxPossibleScore) *
-              100,
-          )
+      competency?.weighted_raw_score !== null &&
+      competency?.weighted_raw_score !== undefined
+        ? Number(competency.weighted_raw_score)
         : null;
 
     const competencyReady =

@@ -315,6 +315,9 @@ async function buildCompetency(employee: EmployeeRow) {
   const requiredType = Number(employee.evaluator_required_type || 2);
   const maxTotal = rows.reduce((total, row) => total + Number(row.max_score || 0), 0);
 
+  // รวมคะแนนรายข้อก่อนปัดเศษ แล้วค่อยปัดผลรวม (ตรงกับ make_report.py และ getWeightedReport)
+  let rawPointsTotal = 0;
+
   const items: SummaryCompetencyRow[] = rows.map((row) => {
     const score1 = Number(row.level1_score || 0);
     const score2 = Number(row.level2_score || 0);
@@ -323,7 +326,8 @@ async function buildCompetency(employee: EmployeeRow) {
         ? score1
         : (score1 * Number(row.level1_weight || 0)) / 100 + (score2 * Number(row.level2_weight || 0)) / 100;
     const maxScore = Number(row.max_score || 0);
-    // น้ำหนักรายข้อตามที่ตั้งในระบบ ถ้าไม่ได้ตั้งจึงแบ่งตาม max_score
+    // น้ำหนักรายข้อตาม crq.weight_percent (ชุด 7 ข้อ = 15x6 + 10, ชุด 4 ข้อ = 25x4) ทุกประเภทบุคลากร
+    // ถ้าไม่ได้ตั้งจึงแบ่งตาม max_score
     const share =
       row.weight_percent !== null && row.weight_percent !== undefined
         ? Number(row.weight_percent)
@@ -331,6 +335,7 @@ async function buildCompetency(employee: EmployeeRow) {
           ? (maxScore / maxTotal) * 100
           : 0;
     const points = maxScore > 0 ? (value / maxScore) * share : 0;
+    rawPointsTotal += points;
 
     return {
       title: text(row.question_title),
@@ -343,7 +348,7 @@ async function buildCompetency(employee: EmployeeRow) {
 
   return {
     rows: items,
-    raw_total: maxTotal > 0 ? round2(items.reduce((total, item) => total + item.points, 0)) : null,
+    raw_total: maxTotal > 0 ? round2(rawPointsTotal) : null,
   };
 }
 
