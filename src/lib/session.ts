@@ -2,6 +2,8 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import {
   AppSession,
+  isStaffOnly,
+  STAFF_HOME_PATH,
   createSessionToken,
   getSessionCookieName,
   getSessionMaxAgeSeconds,
@@ -25,9 +27,17 @@ export async function getSession(): Promise<AppSession | null> {
   return verifySessionToken(token);
 }
 
-export async function requireSession() {
+/** ทุกคนที่ login แล้ว รวมบุคลากรทั่วไป — ใช้เฉพาะหน้าที่บุคลากรทั่วไปเข้าได้ (แบบสรุปผลของตัวเอง) */
+export async function requireAnySession() {
   const session = await getSession();
   if (!session) redirect("/login");
+  return session;
+}
+
+/** ผู้ประเมิน/admin เท่านั้น; บุคลากรทั่วไปถูกส่งไปหน้าแบบสรุปของตัวเอง (กันซ้ำกับ middleware) */
+export async function requireSession() {
+  const session = await requireAnySession();
+  if (isStaffOnly(session)) redirect(STAFF_HOME_PATH);
   return session;
 }
 

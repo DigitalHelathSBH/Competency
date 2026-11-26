@@ -3,7 +3,7 @@ import PrintButton from "@/components/evaluation-summary/PrintButton";
 import PageHeader from "@/components/competency/PageHeader";
 import { getEvaluationSummary, getSummaryRounds } from "@/lib/evaluation-summary";
 import { SUMMARY_FORM_LABELS } from "@/lib/evaluation-summary-types";
-import { requireSession } from "@/lib/session";
+import { requireAnySession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
@@ -21,7 +21,7 @@ function Notice({ children }: { children: React.ReactNode }) {
 }
 
 export default async function EvaluationSummaryPage({ searchParams }: { searchParams: SearchParams }) {
-  const session = await requireSession();
+  const session = await requireAnySession();
   const params = await searchParams;
 
   // ผู้ใช้ทั่วไปดูได้เฉพาะของตัวเอง; admin ระบุรหัสพนักงานคนอื่นได้
