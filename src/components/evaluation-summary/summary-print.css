@@ -1,0 +1,194 @@
+/* Restore document typography and sizing independently of the app's reset. */
+.eval-summary {
+  color-scheme: light;
+  font-family: "Evaluation Summary Sarabun", sans-serif;
+  font-weight: normal;
+  font-style: normal;
+  letter-spacing: normal;
+  text-align: left;
+  color: #000;
+}
+.eval-summary *, .eval-summary *::before, .eval-summary *::after {
+  box-sizing: content-box;
+}
+.eval-summary b, .eval-summary strong { font-weight: bold; }
+.eval-summary svg.tick { display: inline-block; }
+.eval-summary .page {
+  box-sizing: border-box;
+  width: 210mm;
+  min-height: 297mm;
+  padding: 12mm 14mm;
+  margin: 0 auto 24px;
+  background: #fff;
+  color: #000;
+  box-shadow: 0 4px 20px rgb(0 0 0 / 15%);
+}
+.eval-summary tr { break-inside: avoid; }
+.eval-summary thead { display: table-header-group; }
+
+/* ministry */
+.eval-summary.form-ministry { font-family: "Evaluation Summary Sarabun", sans-serif; color: #000; font-size: 17pt; line-height: 1.08; margin: 0; }
+.eval-summary.form-ministry .page + .page { page-break-before: always; }
+.eval-summary.form-ministry .title { text-align: center; font-size: 22pt; font-weight: normal; margin: 0 0 8px; }
+.eval-summary.form-ministry .h {  margin: 3px 0 1px; }
+.eval-summary.form-ministry .gap { margin-top: 1.1em; }
+.eval-summary.form-ministry .gap2 { margin-top: 1.1em; }
+.eval-summary.form-ministry .flow-line { display: flex; align-items: baseline; white-space: nowrap; overflow: hidden; margin-top: 2px; }
+.eval-summary.form-ministry .flow-line .fill { flex: 1; overflow: hidden; margin-left: 4px; }
+.eval-summary.form-ministry .dots { margin: 0; white-space: nowrap; overflow: hidden; line-height: 1.1; }
+.eval-summary.form-ministry .line {  margin: 1px 0; }
+.eval-summary.form-ministry table { width: 100%; border-collapse: collapse; margin-top: 1px; }
+.eval-summary.form-ministry th, .eval-summary.form-ministry td { border: 1px solid #555; padding: 0px 4px; font-size: 15pt; line-height: 1.02; }
+.eval-summary.form-ministry th {  font-weight: normal; text-align: center; }
+.eval-summary.form-ministry td.num { text-align: center; white-space: nowrap; }
+.eval-summary.form-ministry tr.total td {  }
+.eval-summary.form-ministry .sum {  margin: 1px 0 1px; }
+.eval-summary.form-ministry .tick { position: absolute; width: 16px; height: 16px; left: -2px; top: -4px; overflow: visible; }
+.eval-summary.form-ministry .box { display: inline-block; width: 10px; height: 10px; border: 1px solid #000; vertical-align: -1px; margin-right: 4px; font-size: 9pt; line-height: 10px; text-align: center; position: relative; }
+.eval-summary.form-ministry .dot { border-bottom: 1px dotted #444; display: inline-block; min-width: 40mm; }
+.eval-summary.form-ministry .comment { border: 1px solid #555; height: 16mm; margin-top: 3px; }
+.eval-summary.form-ministry .frame { border: 1px solid #555; padding: 6px 8px; margin-bottom: 8px; }
+.eval-summary.form-ministry .sign { text-align: right; margin-top: 10px;  }
+.eval-summary.form-ministry .indent { margin-left: 6mm; }
+.eval-summary.form-ministry .blank { display: block; min-width: 0; height: 18mm; border-bottom: 1px dotted #444; }
+
+/* civil */
+.eval-summary.form-civil { font-family: "Evaluation Summary Sarabun", sans-serif; color: #000; font-size: 18pt; line-height: 1.08; margin: 0; }
+.eval-summary.form-civil .page + .page { page-break-before: always; }
+.eval-summary.form-civil .corner { text-align: right; margin: 0; }
+.eval-summary.form-civil .subtitle { text-align: right; margin: 0 0 0.9em; }
+.eval-summary.form-civil .title { text-align: center; font-size: 23pt; font-weight: normal; margin: 2px 0 6px; }
+.eval-summary.form-civil .h { font-weight: bold; margin: 3px 0 1px; }
+.eval-summary.form-civil .gap { margin-top: 0.9em; }
+.eval-summary.form-civil .line { margin: 1px 0; }
+.eval-summary.form-civil table { width: 100%; border-collapse: collapse; margin-top: 1px; }
+.eval-summary.form-civil th, .eval-summary.form-civil td { border: 1px solid #555; padding: 1px 4px; font-size: 16pt; line-height: 1.15; }
+.eval-summary.form-civil th { font-weight: normal; text-align: center; }
+.eval-summary.form-civil td.num { text-align: center; white-space: nowrap; }
+.eval-summary.form-civil .box { display: inline-block; width: 10px; height: 10px; border: 1px solid #000; vertical-align: -1px; margin-right: 4px; position: relative; }
+.eval-summary.form-civil .tick { position: absolute; width: 16px; height: 16px; left: -2px; top: -4px; overflow: visible; }
+.eval-summary.form-civil .dot { border-bottom: 1px dotted #444; display: inline-block; min-width: 40mm; }
+.eval-summary.form-civil .frame { border: 1px solid #555; padding: 3px 8px; margin: 2px 0 4px; }
+.eval-summary.form-civil .indent { margin-left: 6mm; }
+.eval-summary.form-civil .sign { text-align: right; margin-top: 2px; }
+.eval-summary.form-civil .note-title { font-weight: bold; margin: 4px 0 1px; text-decoration: underline; font-size: 14pt; }
+.eval-summary.form-civil .note { font-size: 11pt; line-height: 1.12; margin: 0; }
+.eval-summary.form-civil .note b { font-weight: bold; }
+.eval-summary.form-civil .devrow td { height: 7mm; }
+
+/* worker */
+.eval-summary.form-worker { font-family: "Evaluation Summary Sarabun", sans-serif; color: #000; font-size: 18pt; line-height: 1.22; margin: 0; }
+.eval-summary.form-worker .page + .page { page-break-before: always; }
+.eval-summary.form-worker .letterhead { margin: 0 0 4px; }
+.eval-summary.form-worker .title { text-align: center; font-size: 24pt; font-weight: normal; margin: 2px 0 10px; }
+.eval-summary.form-worker .h { font-weight: bold; margin: 10px 0 4px; }
+.eval-summary.form-worker .gap { margin-top: 1.1em; }
+.eval-summary.form-worker .line { margin: 5px 0; }
+.eval-summary.form-worker .row2 { display: flex; justify-content: space-between; margin: 5px 0; }
+.eval-summary.form-worker table { width: 100%; border-collapse: collapse; margin-top: 1px; table-layout: fixed; }
+.eval-summary.form-worker th, .eval-summary.form-worker td { border: 1px solid #555; padding: 2px 5px; font-size: 18pt; line-height: 1.15; overflow-wrap: anywhere; }
+.eval-summary.form-worker th { font-weight: normal; text-align: center; }
+.eval-summary.form-worker td.num { text-align: center; white-space: nowrap; }
+.eval-summary.form-worker .box { display: inline-block; width: 10px; height: 10px; border: 1px solid #000; vertical-align: -1px; margin-right: 4px; position: relative; }
+.eval-summary.form-worker .tick { position: absolute; width: 16px; height: 16px; left: -2px; top: -4px; overflow: visible; }
+.eval-summary.form-worker .dot { border-bottom: 1px dotted #444; display: inline-block; min-width: 40mm; }
+.eval-summary.form-worker .indent { margin-left: 6mm; }
+.eval-summary.form-worker .sign { text-align: right; margin-top: 20px; }
+.eval-summary.form-worker .commentbox { border: 1px solid #555; min-height: 115mm; margin-top: 6px; padding: 6px; }
+.eval-summary.form-worker .devline { border-bottom: 1px dotted #444; height: 1.22em; }
+.eval-summary.form-worker .small { font-size: 18pt; }
+.eval-summary.form-worker .frame { border: 1px solid #555; }
+.eval-summary.form-worker .frame-head { text-align: center; border-bottom: 1px solid #555; padding: 2px 0; }
+.eval-summary.form-worker .frame-body { padding: 2px 8px 10px; }
+
+/* temp */
+.eval-summary.form-temp { font-family: "Evaluation Summary Sarabun", sans-serif; color: #000; font-size: 16pt; line-height: 1.2; margin: 0; }
+.eval-summary.form-temp .page + .page { page-break-before: always; }
+.eval-summary.form-temp .letterhead { margin: 0 0 4px; }
+.eval-summary.form-temp .title { text-align: center; font-size: 22pt; font-weight: bold; margin: 2px 0 8px; }
+.eval-summary.form-temp .h { font-weight: bold; margin: 10px 0 4px; }
+.eval-summary.form-temp .gap { margin-top: 0.6em; }
+.eval-summary.form-temp .line { margin: 4px 0; }
+.eval-summary.form-temp .row2 { display: flex; justify-content: space-between; margin: 4px 0; }
+.eval-summary.form-temp table { width: 100%; border-collapse: collapse; margin-top: 1px; table-layout: fixed; }
+.eval-summary.form-temp th, .eval-summary.form-temp td { border: 1px solid #555; padding: 2px 4px; font-size: 16pt; line-height: 1.1; overflow-wrap: anywhere; }
+.eval-summary.form-temp th { font-weight: normal; text-align: center; }
+.eval-summary.form-temp th.lv { font-size: 10.5pt; line-height: 1.05; padding: 2px 1px; }
+.eval-summary.form-temp td.num { text-align: center; white-space: nowrap; }
+.eval-summary.form-temp table.compact td { font-size: 14pt; line-height: 1.05; }
+.eval-summary.form-temp .box { display: inline-block; width: 10px; height: 10px; border: 1px solid #000; vertical-align: -1px; margin-right: 4px; position: relative; }
+.eval-summary.form-temp .tick { position: absolute; width: 16px; height: 16px; left: -2px; top: -4px; overflow: visible; }
+.eval-summary.form-temp .dot { border-bottom: 1px dotted #444; display: inline-block; min-width: 40mm; }
+.eval-summary.form-temp .devline { border-bottom: 1px dotted #444; height: 1.2em; }
+.eval-summary.form-temp .formula { margin: 8px 0 2px; white-space: nowrap; }
+.eval-summary.form-temp .frac { display: inline-block; text-align: center; vertical-align: middle; margin: 0 2px; }
+.eval-summary.form-temp .frac span { display: block; }
+.eval-summary.form-temp .frac .top { border-bottom: 1px solid #000; padding: 0 4px; }
+.eval-summary.form-temp .result { display: inline-block; border: 1px solid #555; min-width: 20mm; text-align: center; padding: 0 4px; }
+.eval-summary.form-temp .note { font-size: 14pt; margin: 2px 0 0; }
+.eval-summary.form-temp .note td { border: 0; padding: 0 6px 0 0; font-size: 14pt; vertical-align: top; }
+.eval-summary.form-temp .frame { border: 1px solid #555; padding: 4px 8px 8px; }
+.eval-summary.form-temp .frame + .frame { border-top: 0; }
+.eval-summary.form-temp .ack { display: flex; justify-content: space-between; }
+.eval-summary.form-temp .ack .sig { width: 62mm; }
+.eval-summary.form-temp .ack .sig p { margin: 4px 0; }
+
+/* gov */
+.eval-summary.form-gov { font-family: "Evaluation Summary Sarabun", sans-serif; color: #000; font-size: 16pt; line-height: 1.2; margin: 0; }
+.eval-summary.form-gov .page + .page { page-break-before: always; }
+.eval-summary.form-gov .letterhead { margin: 0 0 4px; }
+.eval-summary.form-gov .title { text-align: center; font-size: 22pt; font-weight: bold; margin: 2px 0 8px; }
+.eval-summary.form-gov .h { font-weight: bold; margin: 10px 0 4px; }
+.eval-summary.form-gov .gap { margin-top: 0.6em; }
+.eval-summary.form-gov .line { margin: 4px 0; }
+.eval-summary.form-gov .row2 { display: flex; justify-content: space-between; margin: 4px 0; }
+.eval-summary.form-gov table { width: 100%; border-collapse: collapse; margin-top: 1px; table-layout: fixed; }
+.eval-summary.form-gov th, .eval-summary.form-gov td { border: 1px solid #555; padding: 2px 4px; font-size: 16pt; line-height: 1.1; overflow-wrap: anywhere; }
+.eval-summary.form-gov th { font-weight: normal; text-align: center; }
+.eval-summary.form-gov th.lv { font-size: 10.5pt; line-height: 1.05; padding: 2px 1px; }
+.eval-summary.form-gov td.num { text-align: center; white-space: nowrap; }
+.eval-summary.form-gov table.compact td { font-size: 14pt; line-height: 1.05; }
+.eval-summary.form-gov table.dense td { font-size: 13pt; line-height: 1.0; padding: 1px 4px; }
+.eval-summary.form-gov .box { display: inline-block; width: 10px; height: 10px; border: 1px solid #000; vertical-align: -1px; margin-right: 4px; position: relative; }
+.eval-summary.form-gov .tick { position: absolute; width: 16px; height: 16px; left: -2px; top: -4px; overflow: visible; }
+.eval-summary.form-gov .dot { border-bottom: 1px dotted #444; display: inline-block; min-width: 40mm; }
+.eval-summary.form-gov .devline { border-bottom: 1px dotted #444; height: 1.2em; }
+.eval-summary.form-gov .formula { margin: 8px 0 2px; white-space: nowrap; }
+.eval-summary.form-gov .frac { display: inline-block; text-align: center; vertical-align: middle; margin: 0 2px; }
+.eval-summary.form-gov .frac span { display: block; }
+.eval-summary.form-gov .frac .top { border-bottom: 1px solid #000; padding: 0 4px; }
+.eval-summary.form-gov .result { display: inline-block; border: 1px solid #555; min-width: 20mm; text-align: center; padding: 0 4px; }
+.eval-summary.form-gov .note { font-size: 14pt; margin: 2px 0 0; }
+.eval-summary.form-gov .note td { border: 0; padding: 0 6px 0 0; font-size: 14pt; vertical-align: top; }
+.eval-summary.form-gov .frame { border: 1px solid #555; padding: 4px 8px 8px; }
+.eval-summary.form-gov .frame + .frame { border-top: 0; }
+.eval-summary.form-gov .ack { display: flex; justify-content: space-between; }
+.eval-summary.form-gov .ack .sig { width: 62mm; }
+.eval-summary.form-gov .ack .sig p { margin: 4px 0; }
+.eval-summary.form-gov .tight .line, .eval-summary.form-gov .tight .ack .sig p { margin: 1px 0; }
+.eval-summary.form-gov .tight .frame { padding: 2px 8px 4px; }
+
+@media print {
+  @page { size: A4; margin: 12mm 14mm; }
+
+  /* The visibility exception is intentionally global only during form printing. */
+  body:has(.eval-summary) * { visibility: hidden; }
+  .eval-summary, .eval-summary * { visibility: visible; }
+  .eval-summary {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    background: transparent;
+  }
+  .eval-summary .page {
+    width: auto;
+    min-height: 0;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .eval-summary .page + .page { break-before: page; }
+}

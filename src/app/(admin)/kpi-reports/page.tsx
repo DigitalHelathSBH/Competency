@@ -111,11 +111,7 @@ async function getReportRounds(
         AND
         (
           @is_admin = 1
-          OR LTRIM(
-               RTRIM(
-                 k.evaluator_payroll_no
-               )
-             ) = @payroll_no
+          OR k.evaluator_payroll_no = @payroll_no
         )
       ORDER BY
         r.round_year DESC,
@@ -353,23 +349,9 @@ async function getReportRows(
         )
           AS full_name
       FROM ${ssbDb()}.dbo.PYREXT employee_pyrext
-      WHERE LTRIM(
-              RTRIM(
-                CAST(
-                  employee_pyrext.PAYROLLNO
-                  AS varchar(20)
-                )
-              )
-            )
+      WHERE employee_pyrext.PAYROLLNO
           =
-            LTRIM(
-              RTRIM(
-                CAST(
-                  re.payroll_no
-                  AS varchar(20)
-                )
-              )
-            )
+            re.payroll_no
       ORDER BY
         CASE
           WHEN employee_pyrext.TERMINATEDATE IS NULL
@@ -402,23 +384,9 @@ async function getReportRows(
         )
           AS full_name
       FROM ${ssbDb()}.dbo.PYREXT evaluator_pyrext
-      WHERE LTRIM(
-              RTRIM(
-                CAST(
-                  evaluator_pyrext.PAYROLLNO
-                  AS varchar(20)
-                )
-              )
-            )
+      WHERE evaluator_pyrext.PAYROLLNO
           =
-            LTRIM(
-              RTRIM(
-                CAST(
-                  k.evaluator_payroll_no
-                  AS varchar(20)
-                )
-              )
-            )
+            k.evaluator_payroll_no
       ORDER BY
         CASE
           WHEN evaluator_pyrext.TERMINATEDATE IS NULL
@@ -464,11 +432,7 @@ async function getReportRows(
         AND
         (
           @is_admin = 1
-          OR LTRIM(
-               RTRIM(
-                 k.evaluator_payroll_no
-               )
-             ) = @payroll_no
+          OR k.evaluator_payroll_no = @payroll_no
         );
 
       SELECT

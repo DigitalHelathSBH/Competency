@@ -17,6 +17,7 @@ type AssignmentTableState = {
   search: string;
   roundId: string;
   divisionCode: string;
+  sectionCode: string;
   level: string;
   status: string;
 };

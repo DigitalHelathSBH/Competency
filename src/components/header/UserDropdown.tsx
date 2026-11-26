@@ -8,6 +8,7 @@ type CurrentUser = {
   emp_id: string;
   payroll_no: string;
   is_admin: boolean;
+  is_evaluator?: boolean;
 };
 
 function getUserPhotoUrl(
@@ -91,7 +92,7 @@ export default function UserDropdown() {
             {user?.full_name || "ผู้ใช้งาน"}
           </span>
           <span className="mt-0.5 block text-theme-xs text-gray-500 dark:text-gray-400">
-            {user?.emp_id || "-"} {user?.is_admin ? "• Admin" : "• Evaluator"}
+            {user?.emp_id || "-"} {user?.is_admin ? "• Admin" : user?.is_evaluator === false ? "• บุคลากร" : "• Evaluator"}
           </span>
         </div>
 

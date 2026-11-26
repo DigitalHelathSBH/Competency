@@ -1,4 +1,3 @@
-@"
 # dependencies
 /node_modules
 /.pnp
@@ -40,5 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
-"@ | Set-Content -Encoding UTF8 .gitignore
 *.zip
+
+# local backups / scratch
+Report.pdf

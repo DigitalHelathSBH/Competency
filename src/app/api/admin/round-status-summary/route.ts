@@ -150,7 +150,7 @@ export async function GET() {
           JOIN dbo.competency_round r
             ON r.round_id = re.round_id
           LEFT JOIN ${ssbDb()}.dbo.PYREXT ev
-            ON CAST(ev.PAYROLLNO AS varchar(20)) = ea.evaluator_payroll_no
+            ON ev.PAYROLLNO = ea.evaluator_payroll_no
           WHERE ea.status_type <> 9
         ),
         evaluator_calc AS (

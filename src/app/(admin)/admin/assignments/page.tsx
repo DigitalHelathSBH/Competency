@@ -1035,7 +1035,7 @@ async function getEvaluatorRankSnapshot(
         ORDER BY mapped_group.sort_order, mapped_group.rank_group_id
       ) evaluator_group
       WHERE p.TERMINATEDATE IS NULL
-        AND CAST(p.PAYROLLNO AS varchar(20)) = @evaluator_payroll_no
+        AND p.PAYROLLNO = @evaluator_payroll_no
         AND evaluator_group.rank_group_id IS NOT NULL;
     `);
 

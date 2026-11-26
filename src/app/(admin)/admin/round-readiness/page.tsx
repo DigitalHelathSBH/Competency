@@ -337,14 +337,7 @@ function getIssueSourceSql() {
       FROM RelevantPayroll rp
 
       LEFT JOIN ${ssbDb()}.dbo.PYREXT p
-        ON LTRIM(
-             RTRIM(
-               CAST(
-                 p.PAYROLLNO
-                 AS varchar(20)
-               )
-             )
-           ) = rp.payroll_no
+        ON p.PAYROLLNO = rp.payroll_no
     ),
     PyrextResolved AS (
       SELECT
@@ -379,11 +372,7 @@ function getIssueSourceSql() {
         ON ri.round_id = re.round_id
       LEFT JOIN PyrextResolved p
         ON p.payroll_no =
-           LTRIM(
-             RTRIM(
-               a.evaluator_payroll_no
-             )
-           )
+           a.evaluator_payroll_no
       WHERE a.status_type <> 9
     ),
     EvaluatorCalc AS (
@@ -678,14 +667,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      re.payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                re.payroll_no
         ), re.payroll_no) + N' (' + re.payroll_no + N')',
         CASE
           WHEN re.rank_group_source = 'RANK'
@@ -713,14 +695,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      re.payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                re.payroll_no
         ), re.payroll_no) + N' (' + re.payroll_no + N')',
         N'ระบบไม่สามารถเลือกชุดหัวข้อประเมินตามวิชาชีพให้บุคลากรรายนี้ได้',
         N'กรุณาตรวจสอบข้อมูลวิชาชีพของบุคลากร',
@@ -742,14 +717,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      re.payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                re.payroll_no
         ), re.payroll_no) + N' (' + re.payroll_no + N')',
         N'ระบบไม่สามารถเลือกชุดน้ำหนักผู้ประเมินตามกลุ่มภารกิจได้',
         N'กรุณาตรวจสอบข้อมูลกลุ่มภารกิจของบุคลากร',
@@ -771,14 +739,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      re.payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                re.payroll_no
         ), re.payroll_no) + N' (' + re.payroll_no + N')',
         CASE
           WHEN re.first_employee_date IS NULL
@@ -815,14 +776,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      re.payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                re.payroll_no
         ), re.payroll_no) + N' (' + re.payroll_no + N')',
         N'ระบบไม่พบวิธีจัดกลุ่มระดับที่บันทึกไว้สำหรับบุคลากรรายนี้',
         N'นำเข้ารายชื่อใหม่เพื่อคำนวณข้อมูลอีกครั้ง',
@@ -845,14 +799,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      re.payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                re.payroll_no
         ), re.payroll_no) + N' (' + re.payroll_no + N')',
         N'สัดส่วนคะแนน Competency ต้องอยู่ระหว่าง 0 ถึง 100 เปอร์เซ็นต์',
         N'ตรวจสอบการตั้งค่าเปอร์เซ็นต์ตามประเภทบุคลากร',
@@ -879,14 +826,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      re.payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                re.payroll_no
         ), re.payroll_no) + N' (' + re.payroll_no + N')',
         CASE
           WHEN lv.evaluator_level = 1
@@ -920,14 +860,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      re.payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                re.payroll_no
         ), re.payroll_no) + N' (' + re.payroll_no + N')',
         N'ผู้ประเมินและผู้ถูกประเมินต้องเป็นคนละคนกัน',
         N'เปลี่ยนผู้ประเมินเป็นบุคคลอื่น',
@@ -952,14 +885,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      er.employee_payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                er.employee_payroll_no
         ), er.employee_payroll_no) + N' (' + er.employee_payroll_no + N')',
         N'ผู้ประเมิน ' + ISNULL((
           SELECT TOP (1)
@@ -967,14 +893,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      er.evaluator_payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                er.evaluator_payroll_no
         ), er.evaluator_payroll_no) + N' (' + er.evaluator_payroll_no + N') ไม่พบในข้อมูลบุคลากรหรือพ้นสภาพแล้ว',
         N'เลือกผู้ประเมินที่ยังปฏิบัติงานอยู่',
         '/admin/assignments',
@@ -996,14 +915,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      er.employee_payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                er.employee_payroll_no
         ), er.employee_payroll_no) + N' (' + er.employee_payroll_no + N')',
         CASE
           WHEN er.evaluator_group_source = 'RANK'
@@ -1013,14 +925,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      er.evaluator_payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                er.evaluator_payroll_no
         ), er.evaluator_payroll_no) + N' ยังไม่สามารถจัดกลุ่มจากระดับข้าราชการได้'
           WHEN er.evaluator_first_employee_date IS NULL
             THEN N'ผู้ประเมิน ' + ISNULL((
@@ -1029,14 +934,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      er.evaluator_payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                er.evaluator_payroll_no
         ), er.evaluator_payroll_no) + N' ไม่มีวันเริ่มปฏิบัติงาน'
           WHEN er.evaluator_first_employee_date > er.start_date
             THEN N'ผู้ประเมิน ' + ISNULL((
@@ -1045,14 +943,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      er.evaluator_payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                er.evaluator_payroll_no
         ), er.evaluator_payroll_no) + N' เริ่มปฏิบัติงานหลังวันเริ่มรอบ'
           ELSE N'ผู้ประเมิน ' + ISNULL((
           SELECT TOP (1)
@@ -1060,14 +951,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      er.evaluator_payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                er.evaluator_payroll_no
         ), er.evaluator_payroll_no) + N' ยังไม่สามารถจัดกลุ่มจากช่วงอายุงานได้'
         END,
         CASE
@@ -1100,14 +984,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      re.payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                re.payroll_no
         ), re.payroll_no) + N' (' + re.payroll_no + N')',
         CASE
           WHEN a.evaluator_level = 1
@@ -1301,14 +1178,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      re.payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                re.payroll_no
         ),
           re.payroll_no
         ) + N' (' + re.payroll_no + N')',
@@ -1342,14 +1212,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      re.payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                re.payroll_no
         ),
           re.payroll_no
         ) + N' (' + re.payroll_no + N')',
@@ -1380,14 +1243,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      re.payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                re.payroll_no
         ),
           re.payroll_no
         ) + N' (' + re.payroll_no + N')',
@@ -1433,14 +1289,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      re.payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                re.payroll_no
         ),
           re.payroll_no
         ) + N' (' + re.payroll_no + N')',
@@ -1526,14 +1375,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      re.payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                re.payroll_no
         ),
           re.payroll_no
         ) + N' (' + re.payroll_no + N')',
@@ -1564,14 +1406,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      re.payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                re.payroll_no
         ),
           re.payroll_no
         ) + N' (' + re.payroll_no + N')',
@@ -1584,8 +1419,8 @@ function getIssueSourceSql() {
       JOIN dbo.kpi_evaluator_assignment k
         ON k.round_employee_id = re.round_employee_id
        AND k.status_type = 0
-      WHERE LTRIM(RTRIM(k.evaluator_payroll_no))
-          = LTRIM(RTRIM(re.payroll_no))
+      WHERE k.evaluator_payroll_no
+          = re.payroll_no
 
       UNION ALL
 
@@ -1600,14 +1435,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      re.payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                re.payroll_no
         ),
           re.payroll_no
         ) + N' (' + re.payroll_no + N')',
@@ -1621,7 +1449,7 @@ function getIssueSourceSql() {
         ON k.round_employee_id = re.round_employee_id
        AND k.status_type = 0
       LEFT JOIN ${ssbDb()}.dbo.PYREXT p
-        ON CAST(p.PAYROLLNO AS varchar(20))
+        ON p.PAYROLLNO
            = k.evaluator_payroll_no
       WHERE p.PAYROLLNO IS NULL
          OR p.TERMINATEDATE IS NOT NULL
@@ -1639,14 +1467,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      re.payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                re.payroll_no
         ),
           re.payroll_no
         ) + N' (' + re.payroll_no + N')',
@@ -1675,14 +1496,7 @@ function getIssueSourceSql() {
           FROM PyrextResolved
             resolved_name
           WHERE resolved_name.payroll_no =
-                LTRIM(
-                  RTRIM(
-                    CAST(
-                      re.payroll_no
-                      AS varchar(20)
-                    )
-                  )
-                )
+                re.payroll_no
         ),
           re.payroll_no
         ) + N' (' + re.payroll_no + N')',
@@ -1705,8 +1519,8 @@ function getIssueSourceSql() {
              AND ca.round_employee_id = k.round_employee_id
              AND ca.evaluator_level = 1
              AND ca.status_type <> 9
-             AND LTRIM(RTRIM(ca.evaluator_payroll_no))
-                 = LTRIM(RTRIM(k.evaluator_payroll_no))
+             AND ca.evaluator_payroll_no
+                 = k.evaluator_payroll_no
          )
     ),
     IssueSource AS

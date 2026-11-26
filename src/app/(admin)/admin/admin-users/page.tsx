@@ -130,7 +130,7 @@ async function getStaffOptions() {
       sc.ThaiName AS section_name
     FROM dbo.Emp e
     LEFT JOIN ${ssbDb()}.dbo.PYREXT p
-      ON CAST(e.EmpID AS varchar(20)) = CAST(p.PAYROLLNO AS varchar(20))
+      ON e.EmpID = p.PAYROLLNO
     LEFT JOIN ${ssbDb()}.dbo.sectioncode sc
       ON NULLIF(LTRIM(RTRIM(CAST(p.[SECTION] AS varchar(20)))), '') = sc.Code
     WHERE p.PAYROLLNO IS NULL
@@ -185,7 +185,7 @@ async function getAdminUsers() {
       active_assignment.latest_round_code
     FROM dbo.competency_admin_user au
     LEFT JOIN ${ssbDb()}.dbo.PYREXT p
-      ON CAST(au.emp_id AS varchar(20)) = CAST(p.PAYROLLNO AS varchar(20))
+      ON au.emp_id = p.PAYROLLNO
     LEFT JOIN ${ssbDb()}.dbo.sectioncode sc
       ON NULLIF(LTRIM(RTRIM(CAST(p.[SECTION] AS varchar(20)))), '') = sc.Code
     OUTER APPLY (
@@ -266,7 +266,7 @@ export default async function AdminUsersPage({
       .input("emp_id", sql.VarChar(20), empId).query(`
         SELECT TOP 1 CAST(EmpID AS varchar(20)) AS emp_id
         FROM dbo.Emp
-        WHERE CAST(EmpID AS varchar(20)) = @emp_id;
+        WHERE EmpID = @emp_id;
       `);
 
     if (!staffResult.recordset[0]) {
@@ -385,7 +385,7 @@ export default async function AdminUsersPage({
           JOIN dbo.competency_round r
             ON r.round_id = re.round_id
           JOIN dbo.Emp e
-            ON CAST(e.EmpID AS varchar(20)) = CAST(a.evaluator_payroll_no AS varchar(20))
+            ON e.EmpID = a.evaluator_payroll_no
           WHERE a.status_type <> 9
             AND re.status_type <> 9
             AND r.status_type IN (0, 1)
@@ -415,7 +415,7 @@ export default async function AdminUsersPage({
           JOIN dbo.competency_round r
             ON r.round_id = re.round_id
           JOIN dbo.Emp e
-            ON CAST(e.EmpID AS varchar(20)) = CAST(a.evaluator_payroll_no AS varchar(20))
+            ON e.EmpID = a.evaluator_payroll_no
           WHERE a.status_type <> 9
             AND re.status_type <> 9
             AND r.status_type IN (0, 1)
